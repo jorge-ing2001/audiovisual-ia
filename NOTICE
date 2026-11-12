@@ -1,0 +1,64 @@
+audiovisual-ia
+==============
+
+Este producto reutiliza y/o adapta componentes de software de terceros con
+licencia MIT. Se incluyen aquí sus avisos de atribución. Cada componente se
+usa conforme a su licencia; el detalle del uso está en
+docs/REFERENCE-REPOS-LICENSES.md.
+
+NOTA: Las licencias MIT listadas cubren el CÓDIGO de esos proyectos. NO cubren
+recursos externos (música, efectos de sonido, fuentes, modelos de IA, clips),
+que tienen sus propios permisos. Usa recursos cuyos permisos permitan el uso
+previsto.
+
+-------------------------------------------------------------------------------
+lemo-opuscar
+  Código bajo licencia MIT (core/, tools/, etc.). Documentación CC BY-NC 4.0 y
+  films CC BY 4.0 NO se reutilizan como código. Marcas y el personaje "Clawd"
+  quedan excluidos. Uso en audiovisual-ia: adaptadores de TTS (Kokoro/edge-tts),
+  ASR (faster-whisper), export SRT y patrón de mezcla/loudness.
+  https://github.com/lemomo-ai/lemo-opuscar
+
+-------------------------------------------------------------------------------
+howznguyen/shorts-kit — MIT
+  Referencia de estructuras narrativas y SFX libres; patrones de flujo Remotion.
+  https://github.com/howznguyen/shorts-kit
+
+-------------------------------------------------------------------------------
+harry0703/MoneyPrinterTurbo — MIT
+  Referencia de generación automatizada, búsqueda de stock, subtítulos y batch.
+  https://github.com/harry0703/MoneyPrinterTurbo
+
+-------------------------------------------------------------------------------
+Chamanrajragu/purffle-shorts — MIT
+  Referencia de guion con LLM conmutable (incl. Ollama) e imágenes IA/stock.
+  https://github.com/Chamanrajragu/purffle-shorts
+
+-------------------------------------------------------------------------------
+JustCarlos30/skills-videos-cortos — MIT
+  Técnicas ADAPTADAS (reimplementación propia, no copia literal) en el motor de
+  voz/audio: cadena de masterización a -14 LUFS (loudnorm de 2 pasadas +
+  limitador), recorte de silencios con re-mapeo de timings, y subtítulos
+  palabra-por-palabra con diccionario de correcciones. Origen: el script MIT
+  skills/voz-whisper/scripts/voz.py. No se adopta su uso de whisper.cpp ni su
+  estructura de proyecto/Audacity.
+  https://github.com/JustCarlos30/skills-videos-cortos
+
+The MIT License (MIT)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

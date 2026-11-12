@@ -10,6 +10,7 @@ Se inspeccionó cada repositorio para identificar arquitectura, componentes reut
 | **howznguyen/shorts-kit** | **MIT** | Sí | Sí |
 | **harry0703/MoneyPrinterTurbo** | **MIT** | Sí | Sí |
 | **Chamanrajragu/purffle-shorts** | **MIT** | Sí | Sí |
+| **JustCarlos30/skills-videos-cortos** | **MIT** | Sí (técnicas adaptadas, no copia literal) | Sí |
 | **remotion-dev/template-prompt-to-video** | **UNLICENSED** (en `package.json`) | **No** (solo referencia de arquitectura) | No reutilizar su fuente |
 
 > **Remotion en sí** es un producto de empresa con nivel gratuito pero **condiciones de licencia para empresas/uso comercial**. Debe revisarse por separado antes de cualquier explotación comercial (Fase 4). Ver `RISKS-ASSUMPTIONS.md`.
@@ -42,6 +43,21 @@ Generación automatizada de video (Python + FastAPI + Streamlit). Útil como ref
 ### Chamanrajragu/purffle-shorts — MIT
 
 Generador open-source de Shorts en Python. Útil como referencia de: guion con **cualquier LLM (incluido Ollama)**, historias narradas con imágenes IA, simulaciones de chat, stock vs imágenes IA conmutables, servidor MCP. Refuerza la decisión de LLM conmutable con Ollama por defecto.
+
+### JustCarlos30/skills-videos-cortos — MIT (técnicas adaptadas, Opción A)
+
+Paquete en **español** de *skills* en Markdown para agentes de IA (Claude Code / OpenCode) para pensar, escribir, grabar y animar videos cortos, más un script Python real de post-producción de voz. **No es TTS** (no genera voz desde texto): procesa **voz grabada** por una persona. Licencia **MIT** → reutilizable con atribución, incluido uso comercial. El repo aclara que **no incluye** assets externos (música, SFX, modelos, fuentes, clips): esos tienen sus propios permisos y quedan fuera de esta licencia.
+
+Contenido: `skills/cuestionar-guion`, `skills/voz-whisper`, `skills/referencias-opus`, `skills/motion`, `skills/sonido` (guías editoriales en Markdown) y `content-creator/` (workflows/plantillas). El único **código** es `skills/voz-whisper/scripts/voz.py`.
+
+**`voz.py`** — pipeline de 8 pasos: entrada (incl. parser `.aup3` de Audacity) → limpieza FFmpeg (EQ/de-noise/de-esser/compresor) → detección de silencios → transcripción con **whisper.cpp (`whisper-cli`)** en español → extracción de **timings palabra por palabra** con diccionario de correcciones `{"mal":"bien"}` → alineación con tramos de habla → recorte de silencios con **re-mapeo de timings** → masterización a **−14 LUFS** (`loudnorm` de 2 pasadas + `alimiter`).
+
+**Decisión de uso (Opción A — integración limpia, no copia literal):** se **adaptan tres técnicas** al motor de voz/audio (FEAT-004) como **código propio** coherente con nuestra arquitectura, acreditando el origen MIT:
+1. Cadena de limpieza + **masterización a −14 LUFS** (loudnorm de 2 pasadas + limitador) → `engines/voice/master.py`.
+2. **Recorte de silencios con re-mapeo de timings** → `engines/voice/trim.py`.
+3. **Subtítulos palabra por palabra** + diccionario de correcciones `{"mal":"bien"}` (cubre la sección 3.G del prompt maestro) + backend opcional de **voz propia grabada**.
+
+**No se adopta:** el binario `whisper-cli`/whisper.cpp (mantenemos **faster-whisper** como ASR por defecto del MVP; whisper.cpp queda como posible backend conmutable futuro), la estructura `projects/<slug>` + `video.json`, ni el parser `.aup3` de Audacity (fuera de alcance del MVP). Las *skills* en Markdown (criterios de guion, motion, sonido) quedan disponibles como **conocimiento/plantillas** editoriales, no como código.
 
 ### remotion-dev/template-prompt-to-video — UNLICENSED (solo arquitectura)
 

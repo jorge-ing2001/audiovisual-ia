@@ -1,27 +1,33 @@
 {
   "id": "FEAT-004",
   "type": "feat",
-  "description": "Motor Voz/Audio (motor 5) y subtitulos, reutilizando el codigo MIT de lemo-opuscar (/projects/sandbox/lemo-opuscar via AIV_LEMO_OPUSCAR_PATH). TTS con Kokoro offline y fallback edge-tts; subtitulos con faster-whisper; mezcla de audio a -14 LUFS con el enfoque de mux.sh. Atribuir el origen MIT.",
+  "description": "Motor Voz/Audio (motor 5) y subtitulos. TTS con Kokoro offline y fallback edge-tts; ASR/subtitulos con faster-whisper; mezcla y masterizacion a -14 LUFS. Reutiliza codigo MIT de lemo-opuscar (/projects/sandbox/lemo-opuscar via AIV_LEMO_OPUSCAR_PATH) y ADAPTA (no copia literal) tecnicas MIT de JustCarlos30/skills-videos-cortos (skills/voz-whisper/scripts/voz.py): cadena de limpieza+masterizacion a -14 LUFS (loudnorm de 2 pasadas + limitador), recorte de silencios con re-mapeo de timings, y subtitulos palabra-por-palabra con diccionario de correcciones. Codigo PROPIO, coherente con nuestra arquitectura; atribuir ambos origenes MIT en NOTICE/CREDITS.",
   "status": "pending",
   "steps": [
     "providers tts: KokoroTTS (backend/app/providers/tts/kokoro.py) que invoca core/tts/tts.py de lemo-opuscar con un lines.json ([{id,text,voice,speed,lang}]) y recoge out/<id>.wav + dur.json; EdgeTTS (tts/edge.py) que invoca tts_zh.py. Degradacion kokoro->edge si falta el modelo offline. ElevenLabsTTS/OpenAITTS como stubs pluggables.",
-    "provider asr: FasterWhisper (backend/app/providers/asr/faster_whisper.py) que reutiliza el enfoque de core/tts/asr_check.py para obtener WordTiming por palabra.",
+    "provider asr: FasterWhisper (backend/app/providers/asr/faster_whisper.py) que reutiliza el enfoque de core/tts/asr_check.py para obtener WordTiming por palabra (startMs/endMs/text). Mantener faster-whisper como motor ASR por defecto del MVP (whisper.cpp queda como posible backend conmutable futuro, no requerido ahora).",
     "Motor 5 en engines/voice/: VoiceEngine.synthesize(lines) -> list[AudioAsset] usando el TTSProvider del registry y persistiendo Assets(kind='voice'); musica de fondo y SFX (reutilizar SFX libres MIT de shorts-kit/lemo-opuscar) como Assets(kind='music'|'sfx').",
-    "AudioMixer en engines/voice/mixer.py: mezcla voz+musica+SFX y normaliza a ~-14 LUFS llamando a ffmpeg (AIV_FFMPEG_BIN) con el patron loudnorm+limitador de core/render/mux.sh. Devuelve un WAV/archivo de mezcla.",
-    "Subtitulos: a partir de los WordTiming del ASR generar cues y exportar .srt reutilizando el formato de core/render/srt.py; persistir Asset(kind='srt').",
-    "Anadir atribucion MIT de lemo-opuscar en un NOTICE o en docs (ya referida en REFERENCE-REPOS-LICENSES.md).",
-    "Tests: con un texto corto, VoiceEngine produce un WAV real + dur.json (usar Kokoro si esta disponible; si no, marcar skip con razon, sin simular); el export SRT produce un .srt con timestamps bien formateados a partir de cues de ejemplo; AudioMixer produce un archivo de audio y su loudness medido con ffprobe esta cerca de -14 LUFS (tolerancia)."
+    "Cadena de masterizacion (engines/voice/master.py), ADAPTADA de voz.py (MIT): aplicar con ffmpeg (AIV_FFMPEG_BIN) una cadena de limpieza opcional (highpass, afftdn de-noise, de-esser, ecualizacion suave, acompressor) seguida de loudnorm de DOS pasadas (medir -> aplicar con measured_I/TP/LRA/thresh/offset, linear=true) + alimiter, apuntando a I=-14 LUFS, TP<=-1 dBFS. Exponer la cadena como funcion reutilizable por el mixer. Documentar que la cadena es una reimplementacion propia inspirada en voz.py.",
+    "Recorte de silencios con re-mapeo de timings (engines/voice/trim.py), ADAPTADO de voz.py (MIT): detectar silencios con ffmpeg silencedetect, construir tramos de habla, recortar el audio con pequenos margenes (pre/post) y crossfades cortos, y RE-MAPEAR los WordTiming al nuevo eje temporal tras el corte (misma logica de mapeo acumulado de voz.py). Opcional/activable por config; no debe desalinear voz y subtitulos.",
+    "Subtitulos palabra-por-palabra: a partir de los WordTiming del ASR generar (a) cues por palabra y (b) cues agrupados por linea; soportar un diccionario de correcciones {\"mal\":\"bien\"} (patron de voz.py) que reemplaza tokens mal transcritos repartiendo proporcionalmente los tiempos. Exportar .srt (reutilizando el formato de core/render/srt.py) y un palabras.json ([{text,startMs,endMs}]) para el render (subtitulos palabra-por-palabra que pide la seccion 3.G del prompt maestro).",
+    "AudioMixer en engines/voice/mixer.py: mezcla voz+musica+SFX (duck de musica bajo la voz), aplica la cadena de masterizacion (master.py) y normaliza a ~-14 LUFS. Devuelve un WAV/archivo de mezcla + su medicion de loudness.",
+    "Backend OPCIONAL de voz propia grabada (pluggable, AIV_TTS_BACKEND=recorded o un flag): aceptar un audio subido por el usuario -> limpieza/masterizacion (master.py) -> ASR (faster-whisper) -> WordTiming -> subtitulos; produce los mismos Assets(voice/srt/palabras.json) que el camino TTS. Cubre el caso 'usa mi propia voz' ademas del TTS generado. Sin acoplar a estructura projects/<slug> ni a Audacity (.aup3 fuera de alcance del MVP).",
+    "Atribucion: anadir/actualizar un NOTICE (o CREDITS) con la licencia MIT de lemo-opuscar y de JustCarlos30/skills-videos-cortos, indicando que master.py/trim.py y el patron de subtitulos palabra-por-palabra son reimplementaciones propias inspiradas en voz.py (MIT). Reflejarlo tambien en docs/REFERENCE-REPOS-LICENSES.md.",
+    "Tests: con un texto corto, VoiceEngine produce un WAV real + dur.json (usar Kokoro si esta disponible; si no, marcar skip con razon, sin simular); la cadena de masterizacion sobre un WAV sintetico da una medicion de loudness cercana a -14 LUFS (tolerancia, via ffprobe/ebur128); el recorte de silencios sobre un WAV con silencios reduce la duracion y re-mapea correctamente timings de ejemplo (sin solapes); el export SRT y el palabras.json producen intervalos bien formateados; el diccionario de correcciones reemplaza un token de ejemplo repartiendo tiempos."
   ],
   "acceptance_criteria": [
     "Una lista de lineas de narracion produce un WAV por linea y un dur.json con duraciones.",
-    "Se genera un .srt con intervalos correctos a partir de los tiempos del ASR.",
-    "La mezcla final mide aproximadamente -14 LUFS (verificado con ffprobe/ebur128).",
+    "Se genera un .srt (por linea) y un palabras.json (palabra-por-palabra) con intervalos correctos a partir de los tiempos del ASR.",
+    "La cadena de masterizacion (adaptada de voz.py) lleva el audio a aproximadamente -14 LUFS con TP<=-1 dBFS (verificado con ffprobe/ebur128).",
+    "El recorte de silencios reduce la duracion del audio y re-mapea los WordTiming sin solapes ni desalineacion con los subtitulos.",
+    "El diccionario de correcciones {\"mal\":\"bien\"} reemplaza tokens mal transcritos repartiendo los tiempos proporcionalmente.",
     "El fallback kokoro->edge se activa cuando el modelo offline no esta disponible.",
+    "Existe atribucion MIT de lemo-opuscar y de skills-videos-cortos en NOTICE/CREDITS y en docs/REFERENCE-REPOS-LICENSES.md.",
     "pytest del backend pasa (los tests que requieren modelos no disponibles se saltan con razon explicita, no simulada)."
   ],
   "verification": [
     "cd backend && python -m pytest -q"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Integracion Opcion A (tecnicas adaptadas, no copia literal) de JustCarlos30/skills-videos-cortos (MIT): cadena de masterizacion a -14 LUFS (loudnorm 2 pasadas + limitador), recorte de silencios con re-mapeo de timings, subtitulos palabra-por-palabra con diccionario de correcciones, y backend opcional de voz grabada. Se mantiene faster-whisper como ASR por defecto (voz.py usa whisper.cpp/whisper-cli; no se adopta ese binario en el MVP). No se porta la estructura projects/<slug>, video.json ni el parser .aup3 de Audacity."
 }
