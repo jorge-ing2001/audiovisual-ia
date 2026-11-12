@@ -1,0 +1,23 @@
+# --- Python / backend ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Node / frontend / remotion ---
+node_modules/
+.next/
+out/
+remotion/out/
+*.tsbuildinfo
+
+# --- Entorno y datos locales ---
+.env
+*.db
+media/
+
+# --- SO / editores ---
+.DS_Store

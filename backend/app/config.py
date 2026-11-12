@@ -1,0 +1,62 @@
+"""Configuración centralizada (Pydantic Settings).
+
+Lee las variables ``AIV_*`` documentadas en ``docs/LOCAL-FREE-STACK.md`` y ``.env.example``.
+Sin ninguna clave de pago el sistema funciona con los defaults locales/gratuitos:
+LLM=ollama, imágenes=stock (con degradación a placeholder), TTS=kokoro, ASR=faster_whisper.
+"""
+
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Configuración de la aplicación resuelta desde variables de entorno / ``.env``."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AIV_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # --- Selección de backend por capacidad ---
+    llm_backend: str = "ollama"            # ollama | openai
+    image_backend: str = "stock"           # stock | placeholder | sd_local | stability | openai
+    tts_backend: str = "kokoro"            # kokoro | edge | elevenlabs | openai
+    asr_backend: str = "faster_whisper"    # faster_whisper
+
+    # --- LLM local (Ollama) ---
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1:8b"
+
+    # --- Imágenes (stock gratuito; claves gratuitas, opcionales) ---
+    pexels_api_key: str = ""
+    pixabay_api_key: str = ""
+
+    # --- Binarios externos (configurables: en el sandbox viven en /projects/sandbox/.localbin) ---
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+
+    # --- Reutilización de lemo-opuscar (voz/ASR/mux, código MIT) ---
+    lemo_opuscar_path: str = ""
+
+    # --- Proveedores de pago (opcionales; solo si se activan arriba) ---
+    openai_api_key: str = ""
+    elevenlabs_api_key: str = ""
+    stability_api_key: str = ""
+
+    # --- Almacenamiento ---
+    database_url: str = "sqlite:///./audiovisual.db"
+    media_root: str = "./media"
+
+
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """Devuelve la instancia (cacheada) de configuración."""
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings

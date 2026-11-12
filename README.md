@@ -4,7 +4,7 @@ Plataforma de producción audiovisual con inteligencia artificial (2D y 3D) basa
 
 El usuario describe una idea en lenguaje natural y la plataforma la transforma en un video 2D completo: guion, escenas, storyboard, imágenes, voz (TTS), música y efectos, subtítulos sincronizados, línea de tiempo y renderizado final en MP4.
 
-> Estado actual: **planificación de la Fase 1 (MVP 2D)**. Este repositorio contiene, por ahora, la documentación de arquitectura, el plan por fases y el desglose de tareas. La implementación se hace tarea por tarea a partir de `.agents/tasks/`.
+> Estado actual: **Fase 1 (MVP 2D) — andamiaje (FEAT-001)**. El monorepo ya tiene su esqueleto con baseline verde (build/lint/test): backend FastAPI (`/health`), frontend Next.js que consulta ese estado, y proyecto Remotion mínimo. La lógica de negocio (datos, API, motores IA/imagen/voz, timeline, render, editor) se implementa tarea por tarea en FEAT-002..007 a partir de `.agents/tasks/`.
 
 ## Principios
 
@@ -20,10 +20,45 @@ El usuario describe una idea en lenguaje natural y la plataforma la transforma e
 | Frontend | Next.js + TypeScript + Tailwind CSS |
 | Backend | Python + FastAPI (REST) |
 | Audiovisual | Remotion (composición/render) + FFmpeg (media/mezcla) |
-| LLM (por defecto) | Ollama local (p. ej. `llama3.2`) |
+| LLM (por defecto) | Ollama local (`llama3.1:8b`) |
 | Imágenes (por defecto) | Proveedor conmutable, backend local/stock gratuito (Pexels/Pixabay + placeholders generados) |
 | Voz/TTS (por defecto) | Kokoro (offline) o edge-tts, reutilizados de lemo-opuscar |
 | Subtítulos | faster-whisper (local) |
+
+## Estructura del monorepo
+
+```
+audiovisual-ia/
+  backend/     # API FastAPI (app/{api,models,engines,providers,jobs,storage}) + tests
+  frontend/    # Next.js (App Router) + TypeScript + Tailwind
+  remotion/    # proyecto Remotion (composiciones que leen el timeline JSON)
+  docs/        # arquitectura, plan por fases, stack local/gratuito
+  .env.example # variables de configuración (AIV_*)
+```
+
+## Arranque local
+
+Requisitos: Node 20+, Python 3.11, y un FFmpeg accesible (ruta configurable vía `AIV_FFMPEG_BIN`).
+
+```bash
+# 0) Configuración
+cp .env.example .env            # ajusta AIV_OLLAMA_MODEL, AIV_FFMPEG_BIN, claves opcionales…
+
+# 1) Backend (FastAPI)  ->  http://localhost:8000
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000    # GET /health -> {"status":"ok"}
+
+# 2) Frontend (Next.js)  ->  http://localhost:3000
+cd frontend && npm install && npm run dev
+
+# 3) Remotion (composición/render)
+cd remotion && npm install && npm run studio
+```
+
+El LLM por defecto es **Ollama** (`AIV_OLLAMA_MODEL=llama3.1:8b`); arráncalo aparte con `ollama serve`.
+No es necesario para el baseline de FEAT-001, pero sí a partir de FEAT-003.
 
 ## Documentación
 
