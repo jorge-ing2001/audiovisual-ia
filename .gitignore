@@ -12,6 +12,7 @@ node_modules/
 .next/
 out/
 remotion/out/
+remotion/build/
 *.tsbuildinfo
 
 # --- Entorno y datos locales ---

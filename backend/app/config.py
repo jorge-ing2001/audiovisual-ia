@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # --- Motor audiovisual ---
     video_engine: str = "remotion"
     video_render_engine: str = "ffmpeg"
+    # Directorio del proyecto Remotion (composiciones + scripts de build/render).
+    # Vacío = se resuelve al ``remotion/`` del monorepo (hermano de ``backend/``).
+    remotion_dir: str = ""
+    # Binario de Node para invocar los scripts de Remotion (configurable).
+    node_bin: str = "node"
+    fps: int = 30
 
     # --- Binarios externos (configurables: en el sandbox viven en /projects/sandbox/.localbin) ---
     ffmpeg_bin: str = "ffmpeg"

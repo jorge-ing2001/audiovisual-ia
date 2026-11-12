@@ -2,15 +2,17 @@
 
 FEAT-001 añadió ``GET /health``. FEAT-002 monta los routers de negocio
 (projects, scenes, assets, jobs) e inicializa la BD. FEAT-003 añade el router de
-generación (motor de guion y de imagen de escena). El router de render llega después.
+generación (motor de guion y de imagen de escena). FEAT-005 añade el router de render
+(motor 6) y registra el handler de render en el worker.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
+import app.jobs.handlers  # noqa: F401  (importar registra el handler de render, §6)
 from app import __version__
-from app.api import assets, generation, jobs, projects, scenes
+from app.api import assets, generation, jobs, projects, render, scenes
 from app.config import get_settings
 from app.storage.db import init_db
 
@@ -39,6 +41,8 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     # Router de generación: motor de guion y de imagen de escena (FEAT-003).
     app.include_router(generation.router)
+    # Router de render: encola el render (motor 6) y sirve el MP4 (FEAT-005).
+    app.include_router(render.router)
 
     # Referencia a settings para dejar explícita la carga de config al arranque.
     app.state.settings = settings

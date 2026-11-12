@@ -2,7 +2,7 @@
   "id": "FEAT-005",
   "type": "feat",
   "description": "Timeline JSON + motor de Composicion/Render (motor 6). Ensamblar el timeline a partir de escenas y assets, componer con Remotion leyendo ese timeline (imagen + subtitulos + audio por escena) y muxear el MP4 final con FFmpeg. Deja listo el eslabon de render del pipeline.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Definir el esquema del timeline JSON (backend/app/engines/render/timeline.py): lista de escenas con {duration_s, image_path, audio_path, srt/cues, camera_notes placeholder}, resolucion y aspect del proyecto. Persistir Timeline en BD.",
     "TimelineBuilder: a partir de Scene+Asset de un proyecto construye el timeline JSON usando dur.json para los tiempos y los Assets de imagen/voz/srt.",
@@ -22,5 +22,5 @@
     "cd remotion && npm run build"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Implementado: backend/app/engines/render/timeline.py (esquema Pydantic Timeline/TimelineScene/SubtitleCue + TimelineBuilder, usa Asset.meta['duration_s'] del dur.json y reparte cues del .srt por escena), engines/render/engine.py (RenderEngine.compose -> persiste Timeline en BD + llama remotion/scripts/render.mjs + AudioMixer -14 LUFS + mux ffmpeg -> Asset(kind='video')), api/render.py (POST/GET .../render + GET .../video), jobs/handlers.py (handler 'render' registrado en el worker). Remotion: TimelineComposition renderiza imagen a pantalla completa + subtitulos por escena, Root con calculateMetadata deriva duracion/fps/resolucion del timeline, scripts/build.mjs (npm run build = bundle, no necesita Chromium) y scripts/render.mjs (render real con --timeline/--out/--public-dir). Las imagenes se pasan relativas a AIV_MEDIA_ROOT (publicDir) y se cargan con staticFile (file:// y rutas absolutas no las carga el navegador headless). VERIFICADO: backend pytest 59 passed / 2 skipped con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN=/projects/sandbox/.localbin; los 2 skips son pre-existentes (kokoro-onnx y faster-whisper sin modelo). 'npm run build' y 'npm run typecheck' en verde. El test de integracion de render completo PASA en este sandbox (Chromium disponible: renderiza MP4 real verificado con ffprobe -> streams video+audio + duracion ~2s); esta preparado para SALTARSE con razon (RenderUnavailable) si Remotion/Chromium no estan. El eslabon FFmpeg (mux video lavfi + wav real) tiene tests activos propios. Sin claves reales en el repo. Para FEAT-006 (orquestacion end-to-end): encadenar guion->imagenes->voz->subtitulos->render usando RenderEngine.compose / el job 'render' y el endpoint POST /projects/{id}/render."
 }

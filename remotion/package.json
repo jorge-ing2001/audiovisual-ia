@@ -5,11 +5,14 @@
   "description": "Proyecto Remotion de audiovisual-ia: composiciones que leen el timeline JSON (Fase 1 / MVP 2D)",
   "scripts": {
     "studio": "remotion studio",
-    "render": "remotion render",
+    "build": "node scripts/build.mjs",
+    "render": "node scripts/render.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@remotion/bundler": "^4.0.0",
     "@remotion/cli": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "remotion": "^4.0.0"
