@@ -3,7 +3,9 @@
 FEAT-001 añadió ``GET /health``. FEAT-002 monta los routers de negocio
 (projects, scenes, assets, jobs) e inicializa la BD. FEAT-003 añade el router de
 generación (motor de guion y de imagen de escena). FEAT-005 añade el router de render
-(motor 6) y registra el handler de render en el worker.
+(motor 6) y registra el handler de render en el worker. FEAT-006 añade el endpoint
+``POST /projects/{id}/generate`` (pipeline end-to-end prompt->vídeo) y registra el
+handler ``generate_video`` en el worker (vía ``app.jobs.handlers``).
 """
 
 from __future__ import annotations

@@ -116,6 +116,33 @@ class SceneImageRequest(BaseModel):
     force: bool = False
 
 
+class GenerateVideoRequest(BaseModel):
+    """Cuerpo opcional para disparar el pipeline end-to-end prompt->video (FEAT-006).
+
+    - ``prompt``: si se envía, actualiza el prompt del proyecto antes de generar.
+    - ``style``: guía de estilo visual para las imágenes de las escenas.
+    - ``script_fixture``: guion FIXTURE etiquetado (misma forma que la salida del LLM) para
+      verificar el pipeline sin Ollama. Queda marcado ``source=fixture`` y NUNCA se presenta
+      como salida real de IA.
+    - ``script_options``: pistas para el ScriptEngine cuando SÍ hay LLM (p. ej. ``tone``).
+    - ``audio_tracks``: recursos de música/SFX a enlazar (``[{kind,path,provider?,meta?}]``).
+    """
+
+    prompt: str | None = None
+    style: str | None = None
+    script_fixture: dict | None = None
+    script_options: dict | None = None
+    audio_tracks: list[dict] | None = None
+
+
+class GenerateVideoResponse(BaseModel):
+    """Respuesta de ``POST /projects/{id}/generate``: el job encolado (para polling)."""
+
+    job_id: int
+    status: str
+    type: str
+
+
 # --------------------------------------------------------------------------- #
 # Asset
 # --------------------------------------------------------------------------- #

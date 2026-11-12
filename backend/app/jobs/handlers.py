@@ -1,16 +1,20 @@
-"""Handlers de jobs del pipeline (§6). Registra el handler de render (motor 6).
+"""Handlers de jobs del pipeline (§6). Registra los handlers de render y pipeline.
 
-El worker (``app.jobs.worker``) reclama los jobs ``render`` encolados por el endpoint
-``POST /projects/{id}/render`` y ejecuta ``render_handler``, que invoca el
-``RenderEngine`` sobre el proyecto y devuelve el id del ``Asset(kind='video')`` y la ruta
-del MP4 en el ``result`` del job.
+El worker (``app.jobs.worker``) reclama los jobs encolados por los endpoints y ejecuta
+el handler correspondiente:
 
-Importar este módulo (lo hace ``app.main`` al arrancar) basta para registrar el handler.
+- ``render`` (FEAT-005): ``render_handler`` invoca el ``RenderEngine`` sobre el proyecto
+  y devuelve el id del ``Asset(kind='video')`` y la ruta del MP4.
+- ``generate_video`` (FEAT-006): ``generate_video_handler`` encadena el pipeline completo
+  prompt->MP4 (guion, imagen/voz por escena, música/SFX, subtítulos, timeline y render).
+
+Importar este módulo (lo hace ``app.main`` al arrancar) basta para registrar los handlers.
 """
 
 from __future__ import annotations
 
 from app.engines.render import RenderEngine, RenderUnavailable
+from app.jobs.pipeline import generate_video_handler
 from app.jobs.worker import register_handler
 from app.models.entities import Project
 from app.storage.db import session_scope
@@ -47,3 +51,5 @@ def render_handler(payload: dict | None, job_id: int) -> dict:
 
 
 register_handler("render", render_handler)
+# Pipeline end-to-end prompt->video (FEAT-006).
+register_handler("generate_video", generate_video_handler)
