@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     tts_backend: str = "kokoro"            # kokoro | edge | elevenlabs | openai
     asr_backend: str = "faster_whisper"    # faster_whisper
 
+    # --- Voz/Audio (motor 5, reutiliza lemo-opuscar MIT) ---
+    # Voz por defecto para Kokoro (vacío = default del script, af_bella / zf_xiaoxiao).
+    tts_voice: str = ""
+    # Voz por defecto para edge-tts (vacío = default del script, zh-CN-XiaoxiaoNeural).
+    edge_voice: str = ""
+    # HOME alternativo para la caché de espeak-ng de Kokoro cuando $HOME es de solo lectura.
+    tts_cache_home: str = ""
+    # Modelo de faster-whisper (nombre HF o ruta local) e idioma para subtítulos.
+    asr_model: str = "base"
+    asr_language: str = ""
+
     # --- LLM local (Ollama) ---
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"

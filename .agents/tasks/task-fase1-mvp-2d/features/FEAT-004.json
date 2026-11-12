@@ -2,7 +2,7 @@
   "id": "FEAT-004",
   "type": "feat",
   "description": "Motor Voz/Audio (motor 5) y subtitulos, reutilizando el codigo MIT de lemo-opuscar (/projects/sandbox/lemo-opuscar via AIV_LEMO_OPUSCAR_PATH). TTS con Kokoro offline y fallback edge-tts; subtitulos con faster-whisper; mezcla de audio a -14 LUFS con el enfoque de mux.sh. Atribuir el origen MIT.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "providers tts: KokoroTTS (backend/app/providers/tts/kokoro.py) que invoca core/tts/tts.py de lemo-opuscar con un lines.json ([{id,text,voice,speed,lang}]) y recoge out/<id>.wav + dur.json; EdgeTTS (tts/edge.py) que invoca tts_zh.py. Degradacion kokoro->edge si falta el modelo offline. ElevenLabsTTS/OpenAITTS como stubs pluggables.",
     "provider asr: FasterWhisper (backend/app/providers/asr/faster_whisper.py) que reutiliza el enfoque de core/tts/asr_check.py para obtener WordTiming por palabra.",
@@ -23,5 +23,5 @@
     "cd backend && python -m pytest -q"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Implementado motor 5 (voz/audio) + subtitulos. Proveedores TTS: KokoroTTS/EdgeTTS invocan los scripts MIT de lemo-opuscar (core/tts/tts.py, tts_zh.py) via subproceso usando AIV_LEMO_OPUSCAR_PATH; ElevenLabsTTS/OpenAITTS como stubs pluggables. ASR: FasterWhisper (patron de core/tts/asr_check.py) con AsrNotAvailable cuando falta modelo/dep. VoiceEngine.synthesize degrada kokoro->edge ante LemoNotAvailable (solo si el backend activo es kokoro). AudioMixer reusa el enfoque de mux.sh (loudnorm 2 pasadas I=-14/TP=-1.2/LRA=11 + alimiter sobremuestreado) y mide -14.0 LUFS exactos en los tests. Subtitles reusa el formato de core/render/srt.py. Atribucion MIT anadida en /NOTICE. Config: nuevas vars AIV_TTS_VOICE/AIV_EDGE_VOICE/AIV_TTS_CACHE_HOME/AIV_ASR_MODEL/AIV_ASR_LANGUAGE (en .env.example y docs/LOCAL-FREE-STACK.md). Dependencias del tier de voz anadidas como extra opcional 'voice' en pyproject.toml. Entorno: numpy y soundfile instalados en backend/.venv (red disponible) para habilitar los tests reales del mixer/subtitulos; kokoro-onnx/faster-whisper/edge-tts NO instalados (modelos pesados/red), por eso 2 tests se SALTAN con razon explicita (no se simula audio). ffmpeg estatico en /projects/sandbox/.localbin (no en PATH): los tests del mixer se saltan si AIV_FFMPEG_BIN no apunta al binario. Verificacion: cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/python -m pytest -q => 40 passed, 2 skipped; sin env => 37 passed, 5 skipped. ruff check limpio. Nota: la rama actual es feat/003-motores-ia-visual2d (features previas tambien commitearon aqui)."
 }

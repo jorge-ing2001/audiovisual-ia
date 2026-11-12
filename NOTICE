@@ -1,0 +1,44 @@
+audiovisual-ia
+Copyright (c) 2024 audiovisual-ia contributors
+
+This product includes software from third-party projects. Their licenses and
+terms are summarized in docs/REFERENCE-REPOS-LICENSES.md.
+
+-------------------------------------------------------------------------------
+lemo-opuscar (MIT License) — https://github.com/lemomo-ai/lemo-opuscar
+-------------------------------------------------------------------------------
+
+The Voice/Audio engine (motor 5) and the subtitle export of audiovisual-ia reuse
+MIT-licensed code from the lemo-opuscar project ("core/" tree). Only the MIT code
+is reused; lemo-opuscar's documentation (CC BY-NC 4.0), its demo films (CC BY 4.0),
+the excluded demo narrations, the "Clawd" character and third-party marks/assets
+are NOT reused.
+
+Reused components (adapted behind audiovisual-ia's provider interfaces):
+
+  - core/tts/tts.py       Kokoro offline TTS  -> app/providers/tts/kokoro.py
+  - core/tts/tts_zh.py    edge-tts (online)   -> app/providers/tts/edge.py
+  - core/tts/asr_check.py faster-whisper ASR  -> app/providers/asr/faster_whisper.py
+  - core/render/srt.py    SRT export format   -> app/engines/voice/subtitles.py
+  - core/render/mux.sh    FFmpeg loudnorm/mix -> app/engines/voice/mixer.py (-14 LUFS)
+
+The kokoro.py and edge.py providers invoke the original lemo-opuscar scripts via
+subprocess (located by AIV_LEMO_OPUSCAR_PATH), so the upstream MIT code runs
+unmodified. The ASR, subtitle and mixer modules reimplement the same approach.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+Software, and to permit persons to whom the Software is furnished to do so,
+subject to the above copyright notice and this permission notice being included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

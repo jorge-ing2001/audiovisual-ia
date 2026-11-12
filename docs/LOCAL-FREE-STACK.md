@@ -49,6 +49,13 @@ AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe
 # --- Reutilización de lemo-opuscar (voz/ASR/mux) ---
 AIV_LEMO_OPUSCAR_PATH=/projects/sandbox/lemo-opuscar   # scripts MIT reutilizados
 
+# --- Voz/Audio (motor 5) ---
+AIV_TTS_VOICE=            # voz por defecto de Kokoro (vacío = af_bella / zf_xiaoxiao)
+AIV_EDGE_VOICE=           # voz por defecto de edge-tts (vacío = zh-CN-XiaoxiaoNeural)
+AIV_TTS_CACHE_HOME=       # HOME alternativo para la caché de espeak-ng de Kokoro (si $HOME es RO)
+AIV_ASR_MODEL=base        # modelo de faster-whisper (nombre HF o ruta local)
+AIV_ASR_LANGUAGE=         # idioma forzado para la transcripción (vacío = autodetección)
+
 # --- Proveedores de pago (opcionales, solo si se activan arriba) ---
 OPENAI_API_KEY=
 ELEVENLABS_API_KEY=

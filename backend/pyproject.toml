@@ -24,6 +24,18 @@ dev = [
     "pytest>=8.2",
     "ruff>=0.5",
 ]
+# Tier de voz/audio (motor 5). numpy/soundfile bastan para la mezcla y los tests del
+# AudioMixer/subtítulos; kokoro-onnx/edge-tts/faster-whisper habilitan la síntesis y los
+# subtítulos reales (se descargan modelos en el primer uso). El código TTS MIT vive en
+# lemo-opuscar (AIV_LEMO_OPUSCAR_PATH), que aporta sus propias dependencias al invocarse.
+voice = [
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "faster-whisper>=1.0",
+    "edge-tts>=6.1",
+    "kokoro-onnx>=0.3",
+    "soxr>=0.3",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

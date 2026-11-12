@@ -8,9 +8,10 @@ implementación concreta se usa: cambiar de backend por env var NO toca motores,
 API ni frontend (invariante central de la arquitectura, §3).
 
 Las factorías de LLM e imagen (OllamaLLM/OpenAILLM, StockImageProvider/
-PlaceholderProvider) se registran al importar este módulo (FEAT-003). Las de
-voz/subtítulos (KokoroTTS, FasterWhisper) llegan en FEAT-004. Además, el registry
-expone los proveedores FAKE de test bajo el nombre ``"fake"``.
+PlaceholderProvider) se registran al importar este módulo (FEAT-003); las de
+voz/subtítulos (KokoroTTS/EdgeTTS/ElevenLabsTTS/OpenAITTS, FasterWhisper) en
+FEAT-004. Además, el registry expone los proveedores FAKE de test bajo el nombre
+``"fake"``.
 """
 
 from __future__ import annotations
@@ -35,7 +36,8 @@ _ENV_FIELD: dict[str, str] = {
 Factory = Callable[[], Any]
 
 # Mapa capacidad -> {nombre_backend: factoría}.
-# Los proveedores reales se añaden con ``register`` en FEAT-003/004. Los fakes
+# Los proveedores reales se añaden con ``register`` en FEAT-003/004 (ver
+# ``_register_builtin_providers``). Los fakes
 # ("fake") son solo para tests y nunca son el default de ninguna capacidad.
 PROVIDERS: dict[str, dict[str, Factory]] = {
     "llm": {"fake": fakes.FakeLLM},
@@ -64,15 +66,24 @@ def _register_builtin_providers() -> None:
     función para evitar un ciclo (los proveedores importan ``config``, no el
     registry) y para que registrar un backend siga siendo un acto explícito.
     """
+    from app.providers.asr.faster_whisper import FasterWhisper
     from app.providers.image.placeholder import PlaceholderProvider
     from app.providers.image.stock import StockImageProvider
     from app.providers.llm.ollama import OllamaLLM
     from app.providers.llm.openai import OpenAILLM
+    from app.providers.tts.edge import EdgeTTS
+    from app.providers.tts.kokoro import KokoroTTS
+    from app.providers.tts.paid import ElevenLabsTTS, OpenAITTS
 
     register("llm", "ollama", OllamaLLM)
     register("llm", "openai", OpenAILLM)
     register("image", "stock", StockImageProvider)
     register("image", "placeholder", PlaceholderProvider)
+    register("tts", "kokoro", KokoroTTS)
+    register("tts", "edge", EdgeTTS)
+    register("tts", "elevenlabs", ElevenLabsTTS)
+    register("tts", "openai", OpenAITTS)
+    register("asr", "faster_whisper", FasterWhisper)
 
 
 _register_builtin_providers()
