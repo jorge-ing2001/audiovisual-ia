@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-007",
+  "type": "feat",
+  "description": "Frontend MVP (Next.js + TS + Tailwind) con editor basico. Dashboard, creacion de proyecto, editor de prompt, vista de storyboard/escenas, edicion de texto/narracion/duracion y regeneracion por escena, y panel de render con estado y descarga del MP4. Toda accion llama a la API real; sin botones decorativos ni datos simulados.",
+  "status": "pending",
+  "steps": [
+    "frontend/lib/api.ts: cliente REST tipado para projects, scenes, assets, generate, jobs, render, apuntando al backend FastAPI (URL por env NEXT_PUBLIC_API_URL).",
+    "Dashboard (app/page.tsx): lista de proyectos (GET /projects) y boton de crear proyecto.",
+    "Creacion/editor de prompt (app/projects/[id]): formulario de prompt, aspect ratio y duracion; boton Generar que llama POST /generate y hace polling de GET /jobs/{id} mostrando progreso por paso.",
+    "Vista de storyboard/escenas: lista de escenas con su imagen, narration_text y duracion; edicion inline de texto/narracion/duracion (PATCH /scenes/{id}) y boton de regenerar imagen de una escena (POST regenerar) con estado de carga.",
+    "Panel de render: estado del job de render, previsualizacion/enlace y descarga del MP4 (GET asset). Estados claros de generacion/procesamiento/render y manejo de errores visible.",
+    "Estilo minimalista con Tailwind, responsivo, indicadores de progreso; sin controles sin funcionalidad real.",
+    "Verificacion de que lint y tsc pasan; smoke test del flujo contra el backend levantado (crear proyecto -> generar en modo placeholder -> editar escena -> render -> descargar)."
+  ],
+  "acceptance_criteria": [
+    "Desde el navegador: crear proyecto, escribir prompt, generar, ver escenas, editar una escena y regenerar su imagen, renderizar y descargar el MP4.",
+    "Cada boton dispara una llamada real a la API y refleja el estado del job (sin acciones decorativas).",
+    "npm run lint y npx tsc --noEmit pasan sin errores.",
+    "La UI muestra estados de progreso y errores de forma clara."
+  ],
+  "verification": [
+    "cd frontend && npm run build && npm run lint && npx tsc --noEmit"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

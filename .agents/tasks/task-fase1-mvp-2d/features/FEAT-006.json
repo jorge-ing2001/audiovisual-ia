@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "Orquestacion end-to-end prompt->video. Un job de pipeline que encadena guion (FEAT-003), imagenes (FEAT-003), voz/musica/SFX y subtitulos (FEAT-004) y timeline+render+mux (FEAT-005), con estados, progreso y reintentos por escena, expuesto por la API. Produce el MP4 final en modo local/gratuito.",
+  "status": "pending",
+  "steps": [
+    "jobs/pipeline.py: handler de job 'generate_video' que ejecuta los pasos del pipeline de docs/PHASE-1-MVP.md, generando imagen y voz por escena como sub-pasos reanudables y actualizando progreso en la tabla Job.",
+    "Reutilizacion y reintentos: cada paso comprueba la cache de Assets antes de regenerar; los fallos por escena reintentan con backoff sin reiniciar todo el pipeline.",
+    "Endpoint POST /projects/{id}/generate que encola el job de pipeline y devuelve el job id; el estado se consulta con GET /jobs/{id} (progreso por paso).",
+    "Manejo de dependencias ausentes: si Ollama no esta disponible, el paso de guion falla con mensaje accionable; permitir inyectar un guion fixture ETIQUETADO como tal (no presentado como salida real) para poder verificar los pasos posteriores end-to-end.",
+    "Test end-to-end: con image=placeholder y tts=kokoro-o-edge (y guion fixture si no hay Ollama), POST /generate produce finalmente un Asset(kind='video') MP4; el job pasa por los estados hasta succeeded; ffprobe verifica el MP4. Se salta con razon si falta el toolchain de render."
+  ],
+  "acceptance_criteria": [
+    "POST /projects/{id}/generate encola el pipeline y GET /jobs/{id} muestra progreso por paso hasta succeeded.",
+    "En modo local/gratuito (placeholder + edge/kokoro) el pipeline produce un MP4 final reproducible.",
+    "Un fallo en una escena reintenta sin perder el trabajo ya hecho de otras escenas (cache de assets).",
+    "pytest del backend pasa, incluido el test end-to-end (saltado con razon si falta render toolchain)."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

@@ -1,0 +1,27 @@
+{
+  "project_type": "Plataforma web prompt-to-video 2D: backend Python/FastAPI + frontend Next.js/TS/Tailwind + audiovisual Remotion/FFmpeg",
+  "language": "Python (backend) y TypeScript (frontend + Remotion)",
+  "build_system": "Backend: uv o pip + pyproject.toml. Frontend: npm/bun (bun 1.2.14 disponible). Remotion: @remotion/cli. FFmpeg es binario estatico en /projects/sandbox/.localbin/ffmpeg (no en PATH por defecto).",
+  "test_framework": "Backend: pytest. Frontend: next lint + tsc (y vitest si se anade).",
+  "build_command": "Backend: python -m pip install -e backend && python -c 'import app'. Frontend: cd frontend && npm install && npm run build. Remotion: cd remotion && npm install.",
+  "test_command": "Backend: cd backend && pytest. Frontend: cd frontend && npm run lint && npx tsc --noEmit.",
+  "verification_instructions": "Por feature, ejecutar los comandos del campo verification del feature. Baseline (FEAT-001): uvicorn levanta /health, pytest corre, next build/lint pasan. End-to-end (FEAT-006/007): un prompt en modo local/gratuito produce un MP4 reproducible.",
+  "snapshot_or_generated_files": "Ninguno con snapshots versionados. Los artefactos de media (imagenes, wav, srt, mp4, timeline.json) se generan en AIV_MEDIA_ROOT (./media) y NO se versionan (gitignore).",
+  "setup_instructions": "1) Backend: crear venv con Python 3.11, instalar backend/pyproject.toml. 2) Frontend: npm/bun install en frontend/. 3) Remotion: npm install en remotion/. 4) Configurar FFmpeg via AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg. 5) Copiar .env.example a .env. 6) Ollama (LLM) no esta instalado en el sandbox: instalarlo/arrancarlo si es posible; si no, el pipeline se verifica con guion fixture etiquetado. 7) Reutilizar lemo-opuscar via AIV_LEMO_OPUSCAR_PATH=/projects/sandbox/lemo-opuscar.",
+  "environment_constraints": "Gestor de paquetes del sistema y $HOME de SOLO LECTURA. Sin GPU garantizada: Ollama usa modelo pequeno y el default de imagenes degrada a stock/placeholder; Stable Diffusion local es opcional. FFmpeg 7.0.2 estatico en /projects/sandbox/.localbin (no en PATH). Ollama NO preinstalado. Red disponible en desarrollo. Kokoro/espeak-ng exige ruta de datos < ~160 bytes y escribe cache en ~/.cache (puede requerir ruta de cache alternativa por $HOME de solo lectura; fallback edge-tts).",
+  "contribution_requirements": "Seccion 9 del prompt maestro: funcionalidades reales, sin botones decorativos ni datos simulados presentados como terminados; documentar variables de entorno; mantener manifiesto de dependencias; pruebas por modulo; verificar cada fase antes de continuar. Reutilizar codigo MIT de lemo-opuscar con atribucion; NO reutilizar codigo de template-prompt-to-video (UNLICENSED).",
+  "key_patterns": "Capa de proveedores con interfaces (Protocol) + registry que resuelve backend por env var (AIV_*_BACKEND), con defaults locales/gratuitos y degradacion (stock->placeholder, kokoro->edge). Seis motores detras de interfaces; motores 3 (anim2D) y 4 (3D) solo como interfaz + NotImplementedError. Cola de jobs respaldada por BD con worker; jobs por escena. Cache de assets por hash para no regenerar. Timeline JSON que consume Remotion. Reutilizar lemo-opuscar: core/tts/tts.py (Kokoro), tts_zh.py (edge-tts), asr_check.py (faster-whisper), render/srt.py (SRT), render/mux.sh (mezcla -14 LUFS FFmpeg7).",
+  "relevant_files": [
+    "/projects/sandbox/audiovisual-ia/docs/ARCHITECTURE.md",
+    "/projects/sandbox/audiovisual-ia/docs/PHASE-1-MVP.md",
+    "/projects/sandbox/audiovisual-ia/docs/LOCAL-FREE-STACK.md",
+    "/projects/sandbox/audiovisual-ia/docs/REFERENCE-REPOS-LICENSES.md",
+    "/projects/sandbox/audiovisual-ia/docs/RISKS-ASSUMPTIONS.md",
+    "/projects/sandbox/lemo-opuscar/core/tts/tts.py",
+    "/projects/sandbox/lemo-opuscar/core/tts/tts_zh.py",
+    "/projects/sandbox/lemo-opuscar/core/tts/asr_check.py",
+    "/projects/sandbox/lemo-opuscar/core/render/srt.py",
+    "/projects/sandbox/lemo-opuscar/core/render/mux.sh"
+  ],
+  "directory_structure": "audiovisual-ia/: docs/ (planificacion), backend/ (FastAPI: app/{api,models,engines,providers,jobs,storage}), frontend/ (Next.js app/, components/, lib/), remotion/ (composiciones que leen timeline JSON), .env.example. Reutiliza /projects/sandbox/lemo-opuscar (solo lectura) para voz/ASR/mux."
+}

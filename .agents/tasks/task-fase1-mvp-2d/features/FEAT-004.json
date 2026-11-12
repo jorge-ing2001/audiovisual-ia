@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Motor Voz/Audio (motor 5) y subtitulos, reutilizando el codigo MIT de lemo-opuscar (/projects/sandbox/lemo-opuscar via AIV_LEMO_OPUSCAR_PATH). TTS con Kokoro offline y fallback edge-tts; subtitulos con faster-whisper; mezcla de audio a -14 LUFS con el enfoque de mux.sh. Atribuir el origen MIT.",
+  "status": "pending",
+  "steps": [
+    "providers tts: KokoroTTS (backend/app/providers/tts/kokoro.py) que invoca core/tts/tts.py de lemo-opuscar con un lines.json ([{id,text,voice,speed,lang}]) y recoge out/<id>.wav + dur.json; EdgeTTS (tts/edge.py) que invoca tts_zh.py. Degradacion kokoro->edge si falta el modelo offline. ElevenLabsTTS/OpenAITTS como stubs pluggables.",
+    "provider asr: FasterWhisper (backend/app/providers/asr/faster_whisper.py) que reutiliza el enfoque de core/tts/asr_check.py para obtener WordTiming por palabra.",
+    "Motor 5 en engines/voice/: VoiceEngine.synthesize(lines) -> list[AudioAsset] usando el TTSProvider del registry y persistiendo Assets(kind='voice'); musica de fondo y SFX (reutilizar SFX libres MIT de shorts-kit/lemo-opuscar) como Assets(kind='music'|'sfx').",
+    "AudioMixer en engines/voice/mixer.py: mezcla voz+musica+SFX y normaliza a ~-14 LUFS llamando a ffmpeg (AIV_FFMPEG_BIN) con el patron loudnorm+limitador de core/render/mux.sh. Devuelve un WAV/archivo de mezcla.",
+    "Subtitulos: a partir de los WordTiming del ASR generar cues y exportar .srt reutilizando el formato de core/render/srt.py; persistir Asset(kind='srt').",
+    "Anadir atribucion MIT de lemo-opuscar en un NOTICE o en docs (ya referida en REFERENCE-REPOS-LICENSES.md).",
+    "Tests: con un texto corto, VoiceEngine produce un WAV real + dur.json (usar Kokoro si esta disponible; si no, marcar skip con razon, sin simular); el export SRT produce un .srt con timestamps bien formateados a partir de cues de ejemplo; AudioMixer produce un archivo de audio y su loudness medido con ffprobe esta cerca de -14 LUFS (tolerancia)."
+  ],
+  "acceptance_criteria": [
+    "Una lista de lineas de narracion produce un WAV por linea y un dur.json con duraciones.",
+    "Se genera un .srt con intervalos correctos a partir de los tiempos del ASR.",
+    "La mezcla final mide aproximadamente -14 LUFS (verificado con ffprobe/ebur128).",
+    "El fallback kokoro->edge se activa cuando el modelo offline no esta disponible.",
+    "pytest del backend pasa (los tests que requieren modelos no disponibles se saltan con razon explicita, no simulada)."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

@@ -1,0 +1,7 @@
+{
+  "task_id": "task-fase1-mvp-2d",
+  "task_description": "Fase 1 (MVP): plataforma prompt-to-video 2D en modo local/gratuito. Backend FastAPI con capa de proveedores conmutables (defaults locales), seis motores detras de interfaces (2D implementado; anim2D/3D como interfaces), cola de jobs, pipeline prompt->guion->escenas->storyboard->imagenes->voz->musica/SFX->subtitulos->timeline JSON->Remotion->FFmpeg->MP4, y frontend Next.js con editor basico. Reutiliza codigo MIT de lemo-opuscar para voz/ASR/mux. Esta tarea es el plan; la implementacion se delega feature por feature.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006", "FEAT-007"],
+  "blocked_reason": null
+}

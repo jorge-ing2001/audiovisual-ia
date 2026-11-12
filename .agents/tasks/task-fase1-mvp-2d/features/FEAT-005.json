@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Timeline JSON + motor de Composicion/Render (motor 6). Ensamblar el timeline a partir de escenas y assets, componer con Remotion leyendo ese timeline (imagen + subtitulos + audio por escena) y muxear el MP4 final con FFmpeg. Deja listo el eslabon de render del pipeline.",
+  "status": "pending",
+  "steps": [
+    "Definir el esquema del timeline JSON (backend/app/engines/render/timeline.py): lista de escenas con {duration_s, image_path, audio_path, srt/cues, camera_notes placeholder}, resolucion y aspect del proyecto. Persistir Timeline en BD.",
+    "TimelineBuilder: a partir de Scene+Asset de un proyecto construye el timeline JSON usando dur.json para los tiempos y los Assets de imagen/voz/srt.",
+    "remotion/: composicion que recibe el timeline como props (inputProps/props JSON), renderiza por escena una imagen a pantalla completa con la pista de subtitulos y respeta las duraciones. Script de render que acepta la ruta del timeline JSON y un out path.",
+    "Motor 6 en engines/render/: RenderEngine.compose(timeline) que invoca remotion render (npx/@remotion/cli) con el timeline y produce un video; luego AudioMixer produce la mezcla y se muxea con ffmpeg (mux.sh de lemo-opuscar o invocacion equivalente) a MP4 final. Persistir Asset(kind='video').",
+    "Endpoint: POST /projects/{id}/render que encola un job de render y expone su estado; GET para descargar el MP4.",
+    "Tests: TimelineBuilder produce un timeline valido (Pydantic) a partir de escenas+assets de prueba; test de integracion que, con un timeline minimo y assets reales (imagen placeholder + wav corto), ejecuta el render+mux y verifica con ffprobe que el MP4 existe, tiene stream de video y audio y la duracion esperada (se salta con razon si Remotion/FFmpeg no estan)."
+  ],
+  "acceptance_criteria": [
+    "TimelineBuilder genera un timeline JSON valido con una entrada por escena y sus assets.",
+    "Dado un timeline con assets reales, el render+mux produce un MP4 reproducible con video, audio y subtitulos.",
+    "ffprobe confirma streams de video y audio y una duracion coherente con las escenas.",
+    "pytest del backend pasa (el test de integracion de render se salta con razon si faltan Remotion/FFmpeg)."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q",
+    "cd remotion && npm run build"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
