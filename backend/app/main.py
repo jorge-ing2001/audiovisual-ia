@@ -1,8 +1,8 @@
 """Creación de la aplicación FastAPI y endpoints base.
 
 FEAT-001 añadió ``GET /health``. FEAT-002 monta los routers de negocio
-(projects, scenes, assets, jobs), inicializa la BD y registra el handler no-op
-de ejemplo para la cola de jobs. Los routers de generation/render llegan después.
+(projects, scenes, assets, jobs) e inicializa la BD. FEAT-003 añade el router de
+generación (motor de guion y de imagen de escena). El router de render llega después.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import __version__
-from app.api import assets, jobs, projects, scenes
+from app.api import assets, generation, jobs, projects, scenes
 from app.config import get_settings
 from app.storage.db import init_db
 
@@ -37,6 +37,8 @@ def create_app() -> FastAPI:
     app.include_router(scenes.router)
     app.include_router(assets.router)
     app.include_router(jobs.router)
+    # Router de generación: motor de guion y de imagen de escena (FEAT-003).
+    app.include_router(generation.router)
 
     # Referencia a settings para dejar explícita la carga de config al arranque.
     app.state.settings = settings

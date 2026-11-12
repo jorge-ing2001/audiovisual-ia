@@ -30,9 +30,22 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
 
-    # --- Imágenes (stock gratuito; claves gratuitas, opcionales) ---
+    # --- Motor de generación de imágenes (stock gratuito; claves gratuitas, opcionales) ---
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
+    # Orden de búsqueda entre proveedores de stock (CSV): por defecto pixabay y luego pexels.
+    image_provider_order: str = "pixabay,pexels"
+    # Degradación cuando stock no tiene clave/red/resultados.
+    image_fallback: str = "placeholder"
+
+    # --- Generación local futura (Stable Diffusion); declarado pero sin implementar ---
+    sd_local_enabled: bool = False
+    sd_local_backend: str = "comfyui"
+    sd_local_url: str = "http://localhost:8188"
+
+    # --- Motor audiovisual ---
+    video_engine: str = "remotion"
+    video_render_engine: str = "ffmpeg"
 
     # --- Binarios externos (configurables: en el sandbox viven en /projects/sandbox/.localbin) ---
     ffmpeg_bin: str = "ffmpeg"

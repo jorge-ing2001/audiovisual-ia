@@ -86,6 +86,37 @@ class SceneRead(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Generación (motor de guion / imagen de escena)
+# --------------------------------------------------------------------------- #
+
+
+class ScriptGenerateRequest(BaseModel):
+    """Cuerpo opcional para disparar el motor de guion.
+
+    Si se envía ``prompt`` se actualiza el del proyecto antes de generar; ``options``
+    permite pistas (p. ej. ``tone``) para el proveedor LLM.
+    """
+
+    prompt: str | None = None
+    options: dict | None = None
+
+
+class ScriptGenerateResponse(BaseModel):
+    """Resultado de generar el guion: metadatos del Script y sus escenas."""
+
+    script_id: int
+    scenes: list["SceneRead"]
+
+
+class SceneImageRequest(BaseModel):
+    """Cuerpo opcional para (re)generar la imagen de una escena."""
+
+    style: str | None = None
+    seed: int | None = None
+    force: bool = False
+
+
+# --------------------------------------------------------------------------- #
 # Asset
 # --------------------------------------------------------------------------- #
 

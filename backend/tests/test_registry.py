@@ -46,7 +46,14 @@ def test_resolve_fake_backend_returns_protocol_instance(clean_settings, monkeypa
 
 
 def test_resolve_unregistered_backend_raises(clean_settings, monkeypatch):
-    # ollama es el default pero su factoría real llega en FEAT-003.
-    monkeypatch.setenv("AIV_LLM_BACKEND", "ollama")
+    # Un backend inexistente debe fallar con KeyError accionable.
+    monkeypatch.setenv("AIV_LLM_BACKEND", "no_existe")
     with pytest.raises(KeyError):
         registry.resolve("llm")
+
+
+def test_resolve_ollama_is_registered(clean_settings, monkeypatch):
+    # FEAT-003: el default 'ollama' ya tiene factoría real registrada.
+    monkeypatch.setenv("AIV_LLM_BACKEND", "ollama")
+    provider = registry.resolve("llm")
+    assert provider.name == "ollama"

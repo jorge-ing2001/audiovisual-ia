@@ -7,9 +7,9 @@ por variable de entorno (``AIV_LLM_BACKEND``, ``AIV_IMAGE_BACKEND``,
 implementación concreta se usa: cambiar de backend por env var NO toca motores,
 API ni frontend (invariante central de la arquitectura, §3).
 
-Las factorías reales (OllamaLLM, StockImageProvider, KokoroTTS, FasterWhisper)
-se registran en FEAT-003/004 con ``register``. Mientras tanto, el registry conoce
-los *nombres* de los defaults (para que ``resolve`` acierte el nombre activo) y
+Las factorías de LLM e imagen (OllamaLLM/OpenAILLM, StockImageProvider/
+PlaceholderProvider) se registran al importar este módulo (FEAT-003). Las de
+voz/subtítulos (KokoroTTS, FasterWhisper) llegan en FEAT-004. Además, el registry
 expone los proveedores FAKE de test bajo el nombre ``"fake"``.
 """
 
@@ -55,6 +55,27 @@ def register(capability: str, name: str, factory: Factory) -> None:
     if capability not in PROVIDERS:
         raise ValueError(f"Capacidad desconocida: {capability!r}")
     PROVIDERS[capability][name] = factory
+
+
+def _register_builtin_providers() -> None:
+    """Registra los proveedores reales de FEAT-003 (LLM e imagen).
+
+    Se llama una sola vez al importar el módulo. Importa perezosamente dentro de la
+    función para evitar un ciclo (los proveedores importan ``config``, no el
+    registry) y para que registrar un backend siga siendo un acto explícito.
+    """
+    from app.providers.image.placeholder import PlaceholderProvider
+    from app.providers.image.stock import StockImageProvider
+    from app.providers.llm.ollama import OllamaLLM
+    from app.providers.llm.openai import OpenAILLM
+
+    register("llm", "ollama", OllamaLLM)
+    register("llm", "openai", OpenAILLM)
+    register("image", "stock", StockImageProvider)
+    register("image", "placeholder", PlaceholderProvider)
+
+
+_register_builtin_providers()
 
 
 def active_backend(capability: str, project_overrides: dict | None = None) -> str:
