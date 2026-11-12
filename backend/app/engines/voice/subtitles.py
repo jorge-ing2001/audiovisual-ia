@@ -1,4 +1,4 @@
-"""Subtítulos: de ``WordTiming`` a cues y exportación a ``.srt``.
+"""Subtítulos: de ``WordTiming`` a cues y exportación a ``.srt`` / ``palabras.json``.
 
 Reutiliza el formato de ``core/render/srt.py`` de lemo-opuscar (código MIT): mismos
 timestamps ``HH:MM:SS,mmm`` redondeados a milisegundos antes de descomponer (para no
@@ -6,12 +6,20 @@ perder acarreos, p. ej. 1.9996 -> 00:00:02,000) y el mismo recorte de solapes
 adyacentes (el final de un cue se corta al inicio del siguiente).
 
 Los cues se agrupan por palabras (``max_words_per_cue``) a partir de los tiempos del
-ASR; también se expone un ``cue_from_timings`` por línea para cuando se conoce la
-narración de cada escena.
+ASR; también se expone un modo **palabra por palabra** (un cue por palabra) y la
+exportación de un ``palabras.json`` (``[{text,startMs,endMs}]``) para el render de
+subtítulos palabra-por-palabra (§3.G del prompt maestro).
+
+El **diccionario de correcciones** (``{"mal": "bien"}``) es una reimplementación propia
+*inspirada* en ``voz.py`` de skills-videos-cortos (MIT): reemplaza tokens mal transcritos
+y, cuando la corrección tiene varias palabras, reparte proporcionalmente el intervalo del
+token original entre las palabras de reemplazo.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +44,55 @@ def _fmt(seconds: float) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Diccionario de correcciones (patrón de voz.py, reimplementación propia)
+# --------------------------------------------------------------------------- #
+
+
+def _norm_token(text: str) -> str:
+    """Normaliza un token para comparar con el diccionario (minúsculas, sin puntuación)."""
+    return re.sub(r"[^\w]", "", text, flags=re.UNICODE).lower()
+
+
+def apply_corrections(
+    timings: list[WordTiming], corrections: dict[str, str]
+) -> list[WordTiming]:
+    """Reemplaza tokens mal transcritos repartiendo proporcionalmente los tiempos.
+
+    ``corrections`` mapea ``{"mal": "bien"}``. Si el valor de corrección tiene varias
+    palabras, el intervalo ``[start, end]`` del token original se reparte de forma
+    uniforme entre las palabras de reemplazo (preservando la continuidad temporal). La
+    comparación ignora mayúsculas y puntuación.
+    """
+    if not corrections:
+        return list(timings)
+    lut = {_norm_token(k): v for k, v in corrections.items()}
+    result: list[WordTiming] = []
+    for w in timings:
+        replacement = lut.get(_norm_token(w.word))
+        if replacement is None:
+            result.append(w)
+            continue
+        parts = replacement.split()
+        if len(parts) <= 1:
+            result.append(
+                WordTiming(word=replacement, start_s=w.start_s, end_s=w.end_s)
+            )
+            continue
+        span = max(0.0, w.end_s - w.start_s)
+        step = span / len(parts)
+        for i, part in enumerate(parts):
+            start = round(w.start_s + i * step, 3)
+            end = round(w.start_s + (i + 1) * step, 3) if i < len(parts) - 1 else w.end_s
+            result.append(WordTiming(word=part, start_s=start, end_s=round(end, 3)))
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Cues
+# --------------------------------------------------------------------------- #
+
+
 def cues_from_word_timings(
     timings: list[WordTiming], *, max_words_per_cue: int = 7
 ) -> list[Cue]:
@@ -54,9 +111,23 @@ def cues_from_word_timings(
     return cues
 
 
+def cues_per_word(timings: list[WordTiming]) -> list[Cue]:
+    """Genera un cue por cada palabra (modo palabra-por-palabra)."""
+    return [
+        Cue(t0=w.start_s, t1=w.end_s, text=w.word.strip())
+        for w in timings
+        if w.word and w.word.strip()
+    ]
+
+
 def _cue_from_group(group: list[WordTiming]) -> Cue:
     text = " ".join(w.word for w in group).strip()
     return Cue(t0=group[0].start_s, t1=group[-1].end_s, text=text)
+
+
+# --------------------------------------------------------------------------- #
+# Exportación
+# --------------------------------------------------------------------------- #
 
 
 def write_srt(cues: list[Cue], out_path: str) -> str:
@@ -75,4 +146,29 @@ def write_srt(cues: list[Cue], out_path: str) -> str:
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+def words_payload(timings: list[WordTiming]) -> list[dict]:
+    """Devuelve la lista ``[{text,startMs,endMs}]`` para el render palabra-por-palabra."""
+    payload: list[dict] = []
+    for w in timings:
+        if not w.word or not w.word.strip():
+            continue
+        payload.append(
+            {
+                "text": w.word.strip(),
+                "startMs": int(round(max(0.0, w.start_s) * 1000)),
+                "endMs": int(round(max(0.0, w.end_s) * 1000)),
+            }
+        )
+    return payload
+
+
+def write_words_json(timings: list[WordTiming], out_path: str) -> str:
+    """Escribe ``palabras.json`` (``[{text,startMs,endMs}]``) y devuelve la ruta."""
+    payload = words_payload(timings)
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)

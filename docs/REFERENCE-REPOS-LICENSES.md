@@ -7,6 +7,7 @@ Se inspeccionó cada repositorio para identificar arquitectura, componentes reut
 | Repo | Licencia | ¿Reutilizable como código? | Uso comercial |
 |------|----------|----------------------------|---------------|
 | **lemo-opuscar** (local) | Código MIT (`core/`, `tools/`, `styleboard/`, `plugin/`); docs CC BY-NC 4.0; films CC BY 4.0; marcas/`Clawd` excluidos | **Sí, el código MIT** | Sí para el código MIT. Docs: no comercial. No reutilizar assets de terceros ni voces marcadas |
+| **JustCarlos30/skills-videos-cortos** | **MIT** | **Sí (técnicas adaptadas, no copia literal)** | Sí |
 | **howznguyen/shorts-kit** | **MIT** | Sí | Sí |
 | **harry0703/MoneyPrinterTurbo** | **MIT** | Sí | Sí |
 | **Chamanrajragu/purffle-shorts** | **MIT** | Sí | Sí |
@@ -30,6 +31,37 @@ No es una plataforma web: es una **biblioteca de estilos de cine dirigida por c�
 - `core/audio/sfx.py`, `sampler.py`, `pluck.py` — SFX y audio sintetizado (tier música usa numba).
 
 Precaución documentada: Kokoro usa espeak-ng, que exige que la ruta de datos (tras symlinks) tenga < 160 bytes; `tts.py` ya hace una copia a `~/.cache` si la ruta es muy larga. No reutilizar las voces de demos excluidas ni assets de terceros.
+
+### JustCarlos30/skills-videos-cortos — MIT (técnicas adaptadas, Opción A)
+
+Repositorio de "skills" para producción de vídeos cortos. De su skill de voz
+(`skills/voz-whisper/scripts/voz.py`, licencia **MIT**) se **adaptan** (reimplementación
+propia, **sin copiar código**) varias técnicas de audio/voz que amplían el motor 5 en
+FEAT-004. La arquitectura (grafos de filtros FFmpeg propios y capa de proveedores) es
+independiente; solo se toma el enfoque:
+
+- **Cadena de limpieza + masterización a −14 LUFS** → `app/engines/voice/master.py`.
+  Limpieza opcional (`highpass` ~90 Hz, `afftdn` de-noise, de-esser, EQ suave de
+  presencia, `acompressor`) seguida de `loudnorm` de **dos pasadas** (medir → aplicar
+  con `measured_I/TP/LRA/thresh/offset`, `linear=true`) + `alimiter` sobremuestreado,
+  apuntando a I=−14 LUFS y TP ≤ −1 dBFS. El `AudioMixer` reutiliza esta cadena.
+- **Recorte de silencios con re-mapeo de timings** → `app/engines/voice/trim.py`.
+  Detección con `silencedetect`, construcción de tramos de habla con márgenes pre/post,
+  concatenación con crossfades cortos y **re-mapeo acumulado** de los `WordTiming` al
+  nuevo eje temporal (misma lógica de desplazamiento que voz.py). Activable por config
+  (`AIV_TRIM_SILENCE`); no desalinea voz y subtítulos.
+- **Subtítulos palabra-por-palabra + diccionario de correcciones** →
+  `app/engines/voice/subtitles.py`. Cues de una sola palabra, export de `palabras.json`
+  (`[{text,startMs,endMs}]`) para el render, y un diccionario `{"mal":"bien"}` que
+  reemplaza tokens mal transcritos repartiendo proporcionalmente los tiempos.
+- **Backend opcional de voz propia grabada** → `app/engines/voice/recorded.py`
+  (`AIV_TTS_BACKEND=recorded`): audio subido → limpieza/masterización → ASR → subtítulos,
+  produciendo los mismos `Asset(voice/srt)` + `palabras.json` que el camino TTS.
+
+**No se reutiliza** la estructura `projects/<slug>`, el `video.json` ni el parser de
+proyectos `.aup3` de Audacity de voz.py (fuera del alcance del MVP). Se mantiene
+**faster-whisper** como ASR por defecto (voz.py usa whisper.cpp/whisper-cli; no se adopta
+ese binario ahora). Atribución reflejada también en `NOTICE`.
 
 ### howznguyen/shorts-kit — MIT
 

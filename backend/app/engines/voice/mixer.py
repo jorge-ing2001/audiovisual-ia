@@ -5,22 +5,33 @@ dos pasadas de ``loudnorm`` (I=-14 / TP=-1.2 / LRA=11, modo lineal con las medid
 la primera pasada) seguidas de un limitador sobremuestreado, para alcanzar -14 LUFS de
 forma fiable (una sola pasada se desvía ~0.5 LU).
 
+La cadena de limpieza + masterización vive en ``engines/voice/master.py`` (reimplementación
+propia inspirada en ``voz.py`` de skills-videos-cortos, MIT) y el mixer la invoca sobre el
+label del mix ya combinado. Por defecto el mixer NO aplica la limpieza de voz (highpass,
+de-noise, de-esser, etc.) a la mezcla completa para no alterar música/SFX; solo masteriza
+a loudness. Se puede activar con ``cleanup=`` si se mezcla únicamente voz.
+
 Las pistas se combinan con ``amix`` (la voz manda; música/SFX se atenúan). Si solo hay
 una pista, se normaliza directamente. El binario de ffmpeg se toma de ``AIV_FFMPEG_BIN``.
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.config import get_settings
+from app.engines.voice.master import (
+    TARGET_I,
+    CleanupOptions,
+    FfmpegError,
+    VoiceMaster,
+    parse_integrated_lufs,
+    parse_loudnorm_json,
+)
 
-
-class FfmpegError(RuntimeError):
-    """ffmpeg/ffprobe falló o no está disponible."""
+__all__ = ["MixTrack", "MixResult", "AudioMixer", "FfmpegError"]
 
 
 @dataclass
@@ -40,36 +51,41 @@ class MixResult:
     meta: dict = field(default_factory=dict)
 
 
-# Objetivos de loudness (idénticos a core/render/mux.sh).
-TARGET_I = -14.0
-TARGET_TP = -1.2
-TARGET_LRA = 11.0
-
-
 class AudioMixer:
-    """Mezcla y normaliza audio a ~-14 LUFS usando ffmpeg (patrón de mux.sh)."""
+    """Mezcla y normaliza audio a ~-14 LUFS usando ffmpeg (patrón de mux.sh + master.py)."""
 
     def __init__(self, *, ffmpeg_bin: str | None = None, ffprobe_bin: str | None = None) -> None:
         settings = get_settings()
         self.ffmpeg = ffmpeg_bin or settings.ffmpeg_bin
         self.ffprobe = ffprobe_bin or settings.ffprobe_bin
+        self.master = VoiceMaster(ffmpeg_bin=self.ffmpeg, ffprobe_bin=self.ffprobe)
 
     # --- API pública -------------------------------------------------------- #
 
-    def mix(self, tracks: list[MixTrack], out_path: str) -> MixResult:
+    def mix(
+        self,
+        tracks: list[MixTrack],
+        out_path: str,
+        *,
+        cleanup: CleanupOptions | None = None,
+    ) -> MixResult:
         """Mezcla ``tracks`` y escribe un WAV normalizado a ~-14 LUFS en ``out_path``.
 
         La primera pista (habitualmente la voz) marca el canal de referencia; las
-        demás (música, SFX) se suman con su ganancia. Devuelve la loudness medida.
+        demás (música, SFX) se suman con su ganancia. La masterización (loudnorm de 2
+        pasadas + limitador) se delega en ``master.py``. ``cleanup`` activa además la
+        limpieza de voz; por defecto se desactiva para no tocar música/SFX.
         """
         if not tracks:
             raise ValueError("AudioMixer.mix requiere al menos una pista")
 
+        opts = cleanup if cleanup is not None else CleanupOptions(enabled=False)
+
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
 
-        measured = self._measure_loudnorm(tracks)
-        self._render(tracks, measured, str(out))
+        measured = self._measure_loudnorm(tracks, opts)
+        self._render(tracks, measured, str(out), opts)
         integrated = self._measure_integrated(str(out))
         return MixResult(
             path=str(out),
@@ -109,19 +125,16 @@ class AudioMixer:
                 "(en el sandbox: /projects/sandbox/.localbin/ffmpeg)."
             ) from exc
 
-    def _measure_loudnorm(self, tracks: list[MixTrack]) -> dict | None:
+    def _measure_loudnorm(self, tracks: list[MixTrack], cleanup: CleanupOptions) -> dict | None:
         """Primera pasada: mide I/TP/LRA del mix para la segunda pasada lineal."""
         mix = self._mix_filter(tracks)
-        loudnorm = (
-            f"[mix]loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:"
-            f"print_format=json[out]"
-        )
+        measure = self.master.measure_chain("mix", "out", cleanup=cleanup)
         args = []
         for track in tracks:
             args += ["-i", track.path]
         args += [
             "-filter_complex",
-            f"{mix};{loudnorm}",
+            f"{mix};{measure}",
             "-map",
             "[out]",
             "-f",
@@ -133,28 +146,18 @@ class AudioMixer:
             raise FfmpegError(
                 f"ffmpeg no pudo medir la loudness: {(proc.stderr or '')[-600:]}"
             )
-        return _parse_loudnorm_json(proc.stderr or "")
+        return parse_loudnorm_json(proc.stderr or "")
 
-    def _render(self, tracks: list[MixTrack], measured: dict | None, out_path: str) -> None:
-        """Segunda pasada: aplica loudnorm lineal + limitador y escribe el WAV."""
+    def _render(
+        self,
+        tracks: list[MixTrack],
+        measured: dict | None,
+        out_path: str,
+        cleanup: CleanupOptions,
+    ) -> None:
+        """Segunda pasada: aplica la cadena de master.py y escribe el WAV."""
         mix = self._mix_filter(tracks)
-        if measured:
-            loudnorm = (
-                f"[mix]loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:"
-                f"measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:"
-                f"measured_LRA={measured['input_lra']}:"
-                f"measured_thresh={measured['input_thresh']}:"
-                f"offset={measured['target_offset']}:linear=true[ln]"
-            )
-        else:
-            loudnorm = f"[mix]loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}[ln]"
-        # Limitador sobremuestreado (como mux.sh: 192 kHz, techo -1.6 dBFS) y de vuelta a 48 kHz.
-        ceil = round(10 ** (-1.6 / 20), 4)
-        chain = (
-            f"{loudnorm};[ln]aresample=192000,"
-            f"alimiter=limit={ceil}:attack=10:release=200:level=disabled:latency=1,"
-            f"aresample=48000[out]"
-        )
+        chain = self.master.chain("mix", "out", measured=measured, cleanup=cleanup)
         args = []
         for track in tracks:
             args += ["-i", track.path]
@@ -178,45 +181,7 @@ class AudioMixer:
         """Mide la loudness integrada (LUFS) del WAV final con ebur128."""
         args = ["-hide_banner", "-nostats", "-i", path, "-af", "ebur128", "-f", "null", "-"]
         proc = self._run(args)
-        text = proc.stderr or ""
-        value = _parse_integrated_lufs(text)
+        value = parse_integrated_lufs(proc.stderr or "")
         if value is None:
-            raise FfmpegError(
-                f"No se pudo medir la loudness integrada de '{path}'."
-            )
+            raise FfmpegError(f"No se pudo medir la loudness integrada de '{path}'.")
         return value
-
-
-def _parse_loudnorm_json(stderr: str) -> dict | None:
-    """Extrae el bloque JSON que imprime ``loudnorm=print_format=json``."""
-    start = stderr.rfind("{")
-    end = stderr.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return None
-    try:
-        data = json.loads(stderr[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    needed = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
-    if not all(k in data for k in needed):
-        return None
-    # loudnorm no puede medir audio silencioso (valores inf/nan): devolver None.
-    for key in needed:
-        if any(tok in str(data[key]) for tok in ("inf", "nan")):
-            return None
-    return data
-
-
-def _parse_integrated_lufs(stderr: str) -> float | None:
-    """Lee el valor ``I: <n> LUFS`` del resumen de ebur128."""
-    marker = "I:"
-    best: float | None = None
-    for line in stderr.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(marker) and "LUFS" in stripped:
-            token = stripped[len(marker) :].replace("LUFS", "").strip()
-            try:
-                best = float(token)
-            except ValueError:
-                continue
-    return best

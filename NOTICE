@@ -26,6 +26,33 @@ The kokoro.py and edge.py providers invoke the original lemo-opuscar scripts via
 subprocess (located by AIV_LEMO_OPUSCAR_PATH), so the upstream MIT code runs
 unmodified. The ASR, subtitle and mixer modules reimplement the same approach.
 
+-------------------------------------------------------------------------------
+JustCarlos30/skills-videos-cortos (MIT License)
+https://github.com/JustCarlos30/skills-videos-cortos
+-------------------------------------------------------------------------------
+
+The following modules of audiovisual-ia are ORIGINAL, independent reimplementations
+(not literal copies) INSPIRED BY the MIT-licensed audio/voice workflow of
+skills/voz-whisper/scripts/voz.py in JustCarlos30/skills-videos-cortos:
+
+  - app/engines/voice/master.py     Voice cleanup + mastering chain to -14 LUFS
+                                    (highpass / afftdn de-noise / de-esser / soft EQ /
+                                    acompressor, then 2-pass loudnorm + alimiter).
+  - app/engines/voice/trim.py       Silence trimming via ffmpeg silencedetect with
+                                    speech-segment building and cumulative WordTiming
+                                    re-mapping onto the trimmed timeline.
+  - app/engines/voice/subtitles.py  Word-by-word subtitle cues, a palabras.json
+                                    ([{text,startMs,endMs}]) export, and a corrections
+                                    dictionary ({"mal":"bien"}) that redistributes the
+                                    original token's time across replacement words.
+  - app/engines/voice/recorded.py   Optional recorded-voice backend (upload -> master ->
+                                    ASR -> subtitles), same Assets as the TTS path.
+
+No source code from skills-videos-cortos is copied; only the techniques are adapted to
+audiovisual-ia's own architecture (FFmpeg filter graphs and provider layer are our own).
+The projects/<slug> layout, video.json and the Audacity .aup3 parser of voz.py are NOT
+reused.
+
 MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of

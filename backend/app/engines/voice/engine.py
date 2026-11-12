@@ -17,7 +17,12 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.engines.voice.subtitles import cues_from_word_timings, write_srt
+from app.engines.voice.subtitles import (
+    apply_corrections,
+    cues_from_word_timings,
+    write_srt,
+    write_words_json,
+)
 from app.models.entities import Asset, Project
 from app.providers import registry
 from app.providers.base import AudioAsset, VoiceLine
@@ -150,13 +155,15 @@ class VoiceEngine:
         session: Session,
         *,
         max_words_per_cue: int = 7,
+        corrections: dict[str, str] | None = None,
     ) -> Asset | None:
         """Genera subtítulos ``.srt`` del proyecto a partir de los tiempos del ASR.
 
         Transcribe cada WAV de voz (en orden de escena), desplaza los tiempos por el
-        offset acumulado de las líneas previas y escribe un único ``.srt``. Devuelve
-        ``None`` (sin persistir) si el ASR no está disponible, en vez de inventar
-        tiempos.
+        offset acumulado de las líneas previas, aplica el diccionario de correcciones
+        (si se pasa) y escribe un único ``.srt`` (por línea) más un ``palabras.json``
+        (palabra-por-palabra) para el render. Devuelve ``None`` (sin persistir) si el
+        ASR no está disponible, en vez de inventar tiempos.
         """
         voice_assets = [a for a in project.assets if a.kind == "voice"]
         if not voice_assets:
@@ -164,18 +171,21 @@ class VoiceEngine:
 
         asr = registry.resolve("asr", project.provider_overrides)
 
-        all_cues = []
+        all_words: list = []
         offset = 0.0
         try:
             for asset in sorted(voice_assets, key=lambda a: a.id):
                 timings = asr.transcribe(asset.path)
-                cues = cues_from_word_timings(
-                    timings, max_words_per_cue=max_words_per_cue
-                )
-                for cue in cues:
-                    cue.t0 += offset
-                    cue.t1 += offset
-                all_cues.extend(cues)
+                from app.providers.base import WordTiming
+
+                for w in timings:
+                    all_words.append(
+                        WordTiming(
+                            word=w.word,
+                            start_s=w.start_s + offset,
+                            end_s=w.end_s + offset,
+                        )
+                    )
                 offset += float((asset.meta or {}).get("duration_s", 0.0))
         except Exception as exc:  # faster-whisper/modelo no disponible: no inventar
             from app.providers.asr.faster_whisper import AsrNotAvailable
@@ -184,12 +194,18 @@ class VoiceEngine:
                 return None
             raise
 
+        if corrections:
+            all_words = apply_corrections(all_words, corrections)
+
+        all_cues = cues_from_word_timings(all_words, max_words_per_cue=max_words_per_cue)
         if not all_cues:
             return None
 
         srt_dir = ensure_project_workspace(project.id) / "srt"
         srt_path = Path(srt_dir) / "subtitles.srt"
         write_srt(all_cues, str(srt_path))
+        words_path = Path(srt_dir) / "palabras.json"
+        write_words_json(all_words, str(words_path))
 
         asset = Asset(
             project_id=project.id,
@@ -197,7 +213,7 @@ class VoiceEngine:
             kind="srt",
             path=str(srt_path),
             provider="faster_whisper",
-            meta={"cues": len(all_cues)},
+            meta={"cues": len(all_cues), "words_json": str(words_path)},
         )
         session.add(asset)
         session.commit()

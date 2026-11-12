@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # --- Selección de backend por capacidad ---
     llm_backend: str = "ollama"            # ollama | openai
     image_backend: str = "stock"           # stock | placeholder | sd_local | stability | openai
-    tts_backend: str = "kokoro"            # kokoro | edge | elevenlabs | openai
+    tts_backend: str = "kokoro"            # kokoro | edge | elevenlabs | openai | recorded
     asr_backend: str = "faster_whisper"    # faster_whisper
 
     # --- Voz/Audio (motor 5, reutiliza lemo-opuscar MIT) ---
@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # Modelo de faster-whisper (nombre HF o ruta local) e idioma para subtítulos.
     asr_model: str = "base"
     asr_language: str = ""
+    # Recorte de silencios con re-mapeo de timings (tecnica adaptada de voz.py, MIT).
+    # Desactivado por defecto para no alterar la alineacion voz/subtitulos sin pedirlo.
+    trim_silence: bool = False
+    trim_silence_db: float = -35.0
+    trim_min_silence: float = 0.35
+    # Limpieza de voz (highpass/de-noise/de-esser/compresor) antes de masterizar.
+    voice_cleanup: bool = True
 
     # --- LLM local (Ollama) ---
     ollama_url: str = "http://localhost:11434"
