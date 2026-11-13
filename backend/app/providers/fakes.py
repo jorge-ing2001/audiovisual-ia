@@ -73,3 +73,32 @@ class FakeASR:
 
     def transcribe(self, audio_path: str) -> list[WordTiming]:
         return [WordTiming(word="palabra", start_s=0.0, end_s=0.5)]
+
+
+class FakeClip:
+    """ClipProvider de test: produce un ``VideoClip`` válido SIN Blender.
+
+    Para tests de integración del pipeline 3D (FEAT-304) en entornos sin Blender. NO
+    renderiza nada: devuelve un ``VideoClip`` con una ruta determinista (no garantiza que
+    el fichero exista) marcado claramente como ``provider="fake"``. Nunca es el default de
+    la capacidad 'clip' (solo se resuelve con ``AIV_CLIP_BACKEND=fake``).
+    """
+
+    name = "fake"
+
+    def clip_for(self, scene_spec, out_dir: str):
+        # Import perezoso: el artefacto vive en el motor 3D (lógica pura, sin Blender).
+        from app.engines.engine3d.script_builder import output_filename
+        from app.engines.engine3d.types import VideoClip
+
+        path = str(Path(out_dir) / output_filename(scene_spec))
+        return VideoClip(
+            path=path,
+            scene_id=scene_spec.scene_id,
+            duration_s=scene_spec.duration_s,
+            width=scene_spec.width,
+            height=scene_spec.height,
+            fps=scene_spec.fps,
+            provider=self.name,
+            meta={"fake": True, "render_engine": scene_spec.render_engine},
+        )

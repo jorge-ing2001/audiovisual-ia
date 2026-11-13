@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models.entities import Project
 from app.models.schemas import ProjectCreate, ProjectRead, ProjectUpdate
 from app.storage.db import get_db
@@ -27,7 +28,11 @@ def _get_or_404(session: Session, project_id: int) -> Project:
 
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 def create_project(body: ProjectCreate, session: Session = Depends(get_db)) -> Project:
-    project = Project(**body.model_dump())
+    data = body.model_dump()
+    # production_type omitido => default global (AIV_PRODUCTION_TYPE); explícito manda.
+    if data.get("production_type") is None:
+        data["production_type"] = get_settings().production_type
+    project = Project(**data)
     session.add(project)
     session.commit()
     session.refresh(project)

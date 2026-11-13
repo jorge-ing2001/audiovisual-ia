@@ -65,7 +65,10 @@ No es necesario para el baseline de FEAT-001, pero sí a partir de FEAT-003.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — arquitectura modular, capa de proveedores, modelo de datos, colas, config, cómo encajan las fases futuras.
 - [`docs/PHASE-1-MVP.md`](docs/PHASE-1-MVP.md) — alcance del MVP, pipeline extremo a extremo, desglose de tareas con criterios de aceptación y enfoque de pruebas.
 - [`docs/LOCAL-FREE-STACK.md`](docs/LOCAL-FREE-STACK.md) — modo local/gratuito, proveedores por defecto y opciones de pago pluggables, variables de entorno.
-- [`docs/REFERENCE-REPOS-LICENSES.md`](docs/REFERENCE-REPOS-LICENSES.md) — análisis y licencias de los repos de referencia.
+- [`docs/ENGINE-3D-ARCHITECTURE.md`](docs/ENGINE-3D-ARCHITECTURE.md) — arquitectura del motor 3D (Blender) de la Fase 3.
+- [`docs/ENGINE-3D-MVP-STYLIZED.md`](docs/ENGINE-3D-MVP-STYLIZED.md) — alcance del MVP-3D en estilo estilizado.
+- [`docs/ENGINE-3D-RUNBOOK.md`](docs/ENGINE-3D-RUNBOOK.md) — guía operativa para producir el MP4 vertical 9:16 del MVP-3D en tu PC.
+- [`docs/REFERENCE-REPOS-LICENSES.md`](docs/REFERENCE-REPOS-LICENSES.md) — análisis y licencias de los repos de referencia (incluye assets 3D Mixamo/CC0 y Blender GPL).
 - [`docs/RISKS-ASSUMPTIONS.md`](docs/RISKS-ASSUMPTIONS.md) — riesgos y supuestos (Remotion comercial, cómputo local, sandbox, APIs de stock).
 
 ## Repos de referencia

@@ -17,12 +17,19 @@ export type TimelineScene = {
   id: string;
   durationInFrames: number;
   imageSrc?: string;
+  // Clip de vídeo de la escena (producción 3D). Si está presente, la composición dibuja
+  // <OffthreadVideo> a pantalla completa en vez de <Img>.
+  videoSrc?: string;
   // Subtítulos de la escena (ya recortados al rango de la escena por el builder).
   cues?: SubtitleCue[];
   // Narración textual de respaldo (depuración / accesibilidad); no se dibuja si hay cues.
   narrationText?: string;
   // Nota de cámara (placeholder en el MVP 2D; reservado para el motor de animación).
   cameraNotes?: string;
+  // Estilo de subtítulo EXPLÍCITO derivado del production_type del proyecto (no del
+  // artefacto visual): "tiktok" en 3D, "classic" en 2D. Si falta, se asume "classic"
+  // (retrocompatibilidad con timelines 2D previos que no emiten el campo).
+  subtitleStyle?: "tiktok" | "classic";
 };
 
 export type TimelineProps = {

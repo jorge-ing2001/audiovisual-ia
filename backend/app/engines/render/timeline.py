@@ -52,6 +52,12 @@ class TimelineScene(BaseModel):
     image_src: str | None = Field(
         default=None, serialization_alias="imageSrc", validation_alias="imageSrc"
     )
+    # Clip de vídeo de la escena (producción 3D): análogo a ``image_src`` pero para un
+    # ``Asset(kind='video')``. Cuando existe, Remotion dibuja ``<OffthreadVideo>`` en vez
+    # de ``<Img>``; para 2d se mantiene ``image_src``.
+    video_src: str | None = Field(
+        default=None, serialization_alias="videoSrc", validation_alias="videoSrc"
+    )
     audio_src: str | None = Field(
         default=None, serialization_alias="audioSrc", validation_alias="audioSrc"
     )
@@ -62,6 +68,14 @@ class TimelineScene(BaseModel):
     # Placeholder en el MVP 2D: reservado para el motor de animación/cámara.
     camera_notes: str | None = Field(
         default=None, serialization_alias="cameraNotes", validation_alias="cameraNotes"
+    )
+    # Estilo de subtítulo EXPLÍCITO derivado del ``production_type`` del proyecto, no del
+    # artefacto visual: ``"tiktok"`` en producción 3D, ``"classic"`` en 2D. Así una escena
+    # 3D que degrade a imagen (o una 2D con vídeo) conserva el overlay correcto.
+    subtitle_style: str = Field(
+        default="classic",
+        serialization_alias="subtitleStyle",
+        validation_alias="subtitleStyle",
     )
 
     @field_validator("duration_in_frames")
@@ -108,12 +122,14 @@ class Timeline(BaseModel):
                     "id": scene.id,
                     "durationInFrames": scene.duration_in_frames,
                     "imageSrc": _to_static_src(scene.image_src, public_dir),
+                    "videoSrc": _to_static_src(scene.video_src, public_dir),
                     "cues": [
                         {"startS": cue.start_s, "endS": cue.end_s, "text": cue.text}
                         for cue in scene.cues
                     ],
                     "narrationText": scene.narration_text,
                     "cameraNotes": scene.camera_notes,
+                    "subtitleStyle": scene.subtitle_style,
                 }
                 for scene in self.scenes
             ],
@@ -198,10 +214,16 @@ class TimelineBuilder:
     def build(self, project: Project, session: Session, *, fps: int = DEFAULT_FPS) -> Timeline:
         width, height = aspect_to_dims(project.aspect_ratio)
 
+        # Estilo de subtítulo derivado del tipo de producción del proyecto (no del
+        # artefacto): 3D -> TikTok, 2D -> clásico. Coherente en escenas mixtas/degradadas.
+        is_3d = (project.production_type or "2d").strip().lower() == "3d"
+        subtitle_style = "tiktok" if is_3d else "classic"
+
         scenes = sorted(project.scenes, key=lambda s: (s.order, s.id))
         assets = list(project.assets)
 
         image_by_scene = self._latest_by_scene(assets, kind="image")
+        video_by_scene = self._latest_by_scene(assets, kind="video")
         voice_by_scene = self._latest_by_scene(assets, kind="voice")
         project_cues = self._project_cues(assets)
 
@@ -218,10 +240,12 @@ class TimelineBuilder:
                     duration_s=round(duration_s, 3),
                     duration_in_frames=max(1, round(duration_s * fps)),
                     image_src=self._image_path(image_by_scene.get(scene.id)),
+                    video_src=self._asset_path(video_by_scene.get(scene.id)),
                     audio_src=voice_asset.path if voice_asset else None,
                     cues=scene_cues,
                     narration_text=(scene.narration_text or "").strip() or None,
                     camera_notes=scene.camera_notes,
+                    subtitle_style=subtitle_style,
                 )
             )
             offset_s += duration_s
@@ -248,6 +272,10 @@ class TimelineBuilder:
 
     @staticmethod
     def _image_path(asset: Asset | None) -> str | None:
+        return TimelineBuilder._asset_path(asset)
+
+    @staticmethod
+    def _asset_path(asset: Asset | None) -> str | None:
         if asset is None:
             return None
         return asset.path
