@@ -30,6 +30,10 @@ Vídeo vertical **9:16, 1080×1920, ~90 s**, 3D cinematográfico con:
 
 ### 1.1 Qué es alcanzable en el MVP vs. qué requiere iteración (honestidad)
 
+> Versión en **tabla** (por capacidad, con estado MVP / iteración / fase futura) en
+> [`ENGINE-3D-RUNBOOK.md`](ENGINE-3D-RUNBOOK.md) §7.
+
+
 **Alcanzable en el MVP (con assets libres Mixamo/CC0 + EEVEE):**
 - Identidad de personaje constante (es el mismo modelo 3D riggeado: garantizado por
   construcción).

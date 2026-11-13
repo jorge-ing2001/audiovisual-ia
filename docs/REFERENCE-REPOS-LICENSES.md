@@ -79,6 +79,30 @@ Generador open-source de Shorts en Python. Útil como referencia de: guion con *
 
 `package.json` declara `"license": "UNLICENSED"` y depende de `@elevenlabs/elevenlabs-js` por defecto. **No se reutiliza su código.** Se toma solo como **referencia de arquitectura**: prompt→guion, imagen por escena, locución (ElevenLabs/OpenAI), **timeline en JSON** y render con Remotion. Nuestra implementación del flujo timeline-JSON→Remotion es independiente y con defaults locales/gratuitos.
 
+## Assets 3D y Blender (Fase 3 / MVP-3D)
+
+El motor 4 (3D) renderiza con **Blender** y **assets 3D de terceros**. Ninguno de esos
+assets se versiona en el repo (ver `media/assets3d/README.md` para el catalogo y la
+licencia de cada entrada). Resumen de condiciones:
+
+| Recurso | Origen | Licencia | ¿Se versiona? | Uso comercial |
+|---------|--------|----------|---------------|---------------|
+| Personaje + animaciones | **Mixamo** (Adobe) | Uso libre con cuenta Adobe; terminos de Mixamo; **no redistribuir** los ficheros de origen | **No** (los coloca el usuario en `AIV_BLENDER_ASSETS_DIR`) | Permitido en proyectos propios segun terminos de Mixamo; no redistribuir el asset como tal |
+| Sets / props | Modelos **CC0** (Poly Haven, Kenney, etc.) | **CC0 1.0** (dominio publico) | **No** (binarios) ; solo su origen/licencia en el README | Si, sin restriccion |
+| **Blender** (herramienta de render) | blender.org | **GNU GPL** | No aplica (no se incluye) | Si: se usa como **herramienta externa** |
+
+- **Mixamo (Adobe):** personajes/animaciones gratuitos con cuenta Adobe. Para evitar dudas
+  de redistribucion, los assets descargados **no se commitean**; viven en
+  `AIV_BLENDER_ASSETS_DIR` (fuera del control de versiones, como el resto de `media/`).
+- **CC0:** dominio publico, sin atribucion obligatoria; preferido para sets/props. Aun asi
+  se registra su origen en `media/assets3d/README.md` y en `NOTICE`.
+- **Blender es GPL**, pero `audiovisual-ia` **no enlaza ni redistribuye** su codigo: lo
+  invoca como **subproceso externo** (`blender -b -P script.py` via `AIV_BLENDER_BIN`), de
+  modo que la GPL de Blender no se extiende al codigo propio del proyecto. Ver
+  `docs/ENGINE-3D-ARCHITECTURE.md` §2.2 y `docs/ENGINE-3D-RUNBOOK.md`.
+- **Sin marcas de agua ni logos de redes** en los assets libres elegidos (regla dura del
+  prompt del MVP).
+
 ## Reglas aplicadas
 
 - Analizar antes de incorporar; revisar dependencias y versiones; verificar licencia y uso comercial. Hecho.

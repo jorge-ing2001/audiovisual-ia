@@ -7,7 +7,10 @@ headless, reutilizando intacto el pipeline existente (voz, subtítulos, timeline
 (Veo/Runway/Kling).
 
 Es el documento de ARQUITECTURA. El alcance concreto del primer MVP (estilo 3D
-estilizado) está en [`ENGINE-3D-MVP-STYLIZED.md`](ENGINE-3D-MVP-STYLIZED.md).
+estilizado) está en [`ENGINE-3D-MVP-STYLIZED.md`](ENGINE-3D-MVP-STYLIZED.md). La guía
+operativa para producir el MP4 en el PC del usuario (instalar Blender, poblar assets,
+`production_type='3d'`, lanzar el pipeline) está en
+[`ENGINE-3D-RUNBOOK.md`](ENGINE-3D-RUNBOOK.md).
 
 > Estado: **PLAN**. Nada de esto está implementado todavía. El stub
 > `backend/app/engines/engine3d/__init__.py` existe con un docstring y lanza

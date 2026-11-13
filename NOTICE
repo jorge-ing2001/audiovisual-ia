@@ -53,6 +53,27 @@ audiovisual-ia's own architecture (FFmpeg filter graphs and provider layer are o
 The projects/<slug> layout, video.json and the Audacity .aup3 parser of voz.py are NOT
 reused.
 
+-------------------------------------------------------------------------------
+3D assets (Mixamo / CC0) and Blender (GPL) — Phase 3 (MVP-3D)
+-------------------------------------------------------------------------------
+
+The 3D engine (motor 4) renders scenes with Blender and third-party 3D assets. These
+assets are NOT bundled or versioned in this repository: the user downloads them and places
+them under AIV_BLENDER_ASSETS_DIR (defaults to media/assets3d/). Each asset's origin and
+license is catalogued in media/assets3d/README.md. Summary:
+
+  - Character and animations: Mixamo (Adobe). Free to use with an Adobe account under
+    Mixamo's terms of use; do NOT redistribute the source asset files. They are not
+    committed to this repo for that reason.
+  - Sets and props: CC0 1.0 (public domain, e.g. Poly Haven, Kenney). No attribution
+    required; origin recorded anyway in media/assets3d/README.md.
+
+Blender itself is licensed under the GNU GPL. audiovisual-ia uses Blender only as an
+EXTERNAL rendering tool: it invokes the Blender executable (AIV_BLENDER_BIN) as a headless
+subprocess (blender -b -P script.py). No Blender source code is copied, linked, or
+redistributed with this project, so the GPL of Blender does not extend to audiovisual-ia's
+own code. See docs/REFERENCE-REPOS-LICENSES.md and docs/ENGINE-3D-RUNBOOK.md.
+
 MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
