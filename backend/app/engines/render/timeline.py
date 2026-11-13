@@ -52,6 +52,12 @@ class TimelineScene(BaseModel):
     image_src: str | None = Field(
         default=None, serialization_alias="imageSrc", validation_alias="imageSrc"
     )
+    # Clip de vídeo de la escena (producción 3D): análogo a ``image_src`` pero para un
+    # ``Asset(kind='video')``. Cuando existe, Remotion dibuja ``<OffthreadVideo>`` en vez
+    # de ``<Img>``; para 2d se mantiene ``image_src``.
+    video_src: str | None = Field(
+        default=None, serialization_alias="videoSrc", validation_alias="videoSrc"
+    )
     audio_src: str | None = Field(
         default=None, serialization_alias="audioSrc", validation_alias="audioSrc"
     )
@@ -108,6 +114,7 @@ class Timeline(BaseModel):
                     "id": scene.id,
                     "durationInFrames": scene.duration_in_frames,
                     "imageSrc": _to_static_src(scene.image_src, public_dir),
+                    "videoSrc": _to_static_src(scene.video_src, public_dir),
                     "cues": [
                         {"startS": cue.start_s, "endS": cue.end_s, "text": cue.text}
                         for cue in scene.cues
@@ -202,6 +209,7 @@ class TimelineBuilder:
         assets = list(project.assets)
 
         image_by_scene = self._latest_by_scene(assets, kind="image")
+        video_by_scene = self._latest_by_scene(assets, kind="video")
         voice_by_scene = self._latest_by_scene(assets, kind="voice")
         project_cues = self._project_cues(assets)
 
@@ -218,6 +226,7 @@ class TimelineBuilder:
                     duration_s=round(duration_s, 3),
                     duration_in_frames=max(1, round(duration_s * fps)),
                     image_src=self._image_path(image_by_scene.get(scene.id)),
+                    video_src=self._asset_path(video_by_scene.get(scene.id)),
                     audio_src=voice_asset.path if voice_asset else None,
                     cues=scene_cues,
                     narration_text=(scene.narration_text or "").strip() or None,
@@ -248,6 +257,10 @@ class TimelineBuilder:
 
     @staticmethod
     def _image_path(asset: Asset | None) -> str | None:
+        return TimelineBuilder._asset_path(asset)
+
+    @staticmethod
+    def _asset_path(asset: Asset | None) -> str | None:
         if asset is None:
             return None
         return asset.path

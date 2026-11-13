@@ -147,10 +147,17 @@ def _with_retries(fn, *, what: str, max_retries: int = SCENE_MAX_RETRIES,
     se reintenta sin reiniciar todo el pipeline. Si se agotan los reintentos se propaga
     la última excepción (el worker la convierte en failed/reintento del job completo).
     """
+    from app.engines.engine3d import Engine3DUnavailable
+
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             return fn()
+        except Engine3DUnavailable:
+            # Indisponibilidad de render 3D: NO es transitoria y NO se simula un clip.
+            # Se propaga tal cual (igual que RenderUnavailable del motor 6) para que el
+            # worker la marque como fallo con mensaje accionable.
+            raise
         except Exception as exc:  # noqa: BLE001 - se reintenta el sub-paso aislado
             last_exc = exc
             if attempt < max_retries and base_backoff > 0:
@@ -292,6 +299,16 @@ def _scene_has_valid_voice(session: Session, scene: Scene) -> bool:
     return False
 
 
+def _scene_has_valid_video(session: Session, scene: Scene) -> bool:
+    """¿La escena ya tiene un Asset de vídeo (clip 3D) con fichero en disco? (idempotencia)."""
+    from pathlib import Path
+
+    for asset in scene.assets:
+        if asset.kind == "video" and Path(asset.path).is_file():
+            return True
+    return False
+
+
 def _generate_scene_assets(
     project: Project, session: Session, options: dict, progress: _Progress
 ) -> None:
@@ -307,19 +324,31 @@ def _generate_scene_assets(
     total = len(scenes)
     style = options.get("style")
 
-    visual = VisualEngine()
+    is_3d = (project.production_type or "2d").strip().lower() == "3d"
+    visual = None if is_3d else VisualEngine()
+    source_label = "clip 3D" if is_3d else "imagen"
     for index, scene in enumerate(scenes):
         progress.advance(
             STEP_SCENES, done=index, total=total,
-            detail=f"escena {index + 1}/{total}: imagen+voz",
+            detail=f"escena {index + 1}/{total}: {source_label}+voz",
         )
-        # --- imagen (idempotente) ---
-        if not _scene_has_valid_image(session, scene):
-            _with_retries(
-                lambda s=scene: visual.render_scene_image(s, session, style=style),
-                what=f"imagen de la escena {scene.id}",
-            )
-            session.refresh(scene)
+        # --- fuente visual por escena (idempotente): bifurca por production_type ---
+        #   2d -> imagen por escena (VisualEngine), comportamiento EXACTO del MVP.
+        #   3d -> clip de vídeo por escena vía la capacidad 'clip' del registry (motor 4).
+        if is_3d:
+            if not _scene_has_valid_video(session, scene):
+                _with_retries(
+                    lambda s=scene: _generate_scene_clip(project, s, session),
+                    what=f"clip 3D de la escena {scene.id}",
+                )
+                session.refresh(scene)
+        else:
+            if not _scene_has_valid_image(session, scene):
+                _with_retries(
+                    lambda s=scene: visual.render_scene_image(s, session, style=style),
+                    what=f"imagen de la escena {scene.id}",
+                )
+                session.refresh(scene)
         # --- voz (idempotente) ---
         if not _scene_has_valid_voice(session, scene):
             _with_retries(
@@ -328,8 +357,10 @@ def _generate_scene_assets(
             )
             session.refresh(scene)
 
-    progress.advance(STEP_SCENES, done=total, total=total, detail="imágenes y voces listas")
-    progress.finish(STEP_SCENES, detail=f"{total} escenas con imagen y voz")
+    progress.advance(
+        STEP_SCENES, done=total, total=total, detail=f"{source_label}s y voces listas"
+    )
+    progress.finish(STEP_SCENES, detail=f"{total} escenas con {source_label} y voz")
 
 
 def _synthesize_scene_voice(project: Project, scene: Scene, session: Session) -> None:
@@ -365,6 +396,46 @@ def _synthesize_scene_voice(project: Project, scene: Scene, session: Session) ->
         meta={
             "duration_s": clip.duration_s,
             "sample_rate": clip.sample_rate,
+            **(clip.meta or {}),
+        },
+    )
+    session.add(asset)
+    session.commit()
+
+
+def _generate_scene_clip(project: Project, scene: Scene, session: Session) -> None:
+    """Genera el clip de vídeo 3D de UNA escena y persiste su ``Asset(kind='video')``.
+
+    Producción 3D (``project.production_type=='3d'``): en vez de una imagen por escena se
+    resuelve la capacidad ``'clip'`` del registry (por defecto ``BlenderClipProvider`` sobre
+    el motor 4; conmutable vía ``AIV_CLIP_BACKEND``/``provider_overrides``). El ``Scene3DSpec``
+    determinista lo construye ``engine3d.mapping.scene_to_spec`` y el clip se escribe en el
+    workspace del proyecto (``clips3d/scene_<id>``), análogo a la voz.
+
+    Si el proveedor no puede renderizar (``Engine3DUnavailable``, p. ej. sin Blender), la
+    excepción se propaga: NUNCA se simula un clip (§9 del prompt maestro).
+    """
+    from app.config import get_settings
+    from app.engines.engine3d import mapping
+    from app.storage.media import ensure_project_workspace
+
+    clip_provider = registry.resolve("clip", project.provider_overrides)
+    spec = mapping.scene_to_spec(scene, project, settings=get_settings())
+    out_dir = ensure_project_workspace(project.id) / "clips3d" / f"scene_{scene.id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    clip = clip_provider.clip_for(spec, str(out_dir))
+    asset = Asset(
+        project_id=project.id,
+        scene_id=scene.id,
+        kind="video",
+        path=clip.path,
+        provider=clip.provider,
+        meta={
+            "duration_s": clip.duration_s,
+            "width": clip.width,
+            "height": clip.height,
+            "fps": clip.fps,
             **(clip.meta or {}),
         },
     )

@@ -17,6 +17,9 @@ export type TimelineScene = {
   id: string;
   durationInFrames: number;
   imageSrc?: string;
+  // Clip de vídeo de la escena (producción 3D). Si está presente, la composición dibuja
+  // <OffthreadVideo> a pantalla completa en vez de <Img>.
+  videoSrc?: string;
   // Subtítulos de la escena (ya recortados al rango de la escena por el builder).
   cues?: SubtitleCue[];
   // Narración textual de respaldo (depuración / accesibilidad); no se dibuja si hay cues.
