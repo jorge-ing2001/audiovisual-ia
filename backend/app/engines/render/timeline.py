@@ -69,6 +69,14 @@ class TimelineScene(BaseModel):
     camera_notes: str | None = Field(
         default=None, serialization_alias="cameraNotes", validation_alias="cameraNotes"
     )
+    # Estilo de subtítulo EXPLÍCITO derivado del ``production_type`` del proyecto, no del
+    # artefacto visual: ``"tiktok"`` en producción 3D, ``"classic"`` en 2D. Así una escena
+    # 3D que degrade a imagen (o una 2D con vídeo) conserva el overlay correcto.
+    subtitle_style: str = Field(
+        default="classic",
+        serialization_alias="subtitleStyle",
+        validation_alias="subtitleStyle",
+    )
 
     @field_validator("duration_in_frames")
     @classmethod
@@ -121,6 +129,7 @@ class Timeline(BaseModel):
                     ],
                     "narrationText": scene.narration_text,
                     "cameraNotes": scene.camera_notes,
+                    "subtitleStyle": scene.subtitle_style,
                 }
                 for scene in self.scenes
             ],
@@ -205,6 +214,11 @@ class TimelineBuilder:
     def build(self, project: Project, session: Session, *, fps: int = DEFAULT_FPS) -> Timeline:
         width, height = aspect_to_dims(project.aspect_ratio)
 
+        # Estilo de subtítulo derivado del tipo de producción del proyecto (no del
+        # artefacto): 3D -> TikTok, 2D -> clásico. Coherente en escenas mixtas/degradadas.
+        is_3d = (project.production_type or "2d").strip().lower() == "3d"
+        subtitle_style = "tiktok" if is_3d else "classic"
+
         scenes = sorted(project.scenes, key=lambda s: (s.order, s.id))
         assets = list(project.assets)
 
@@ -231,6 +245,7 @@ class TimelineBuilder:
                     cues=scene_cues,
                     narration_text=(scene.narration_text or "").strip() or None,
                     camera_notes=scene.camera_notes,
+                    subtitle_style=subtitle_style,
                 )
             )
             offset_s += duration_s

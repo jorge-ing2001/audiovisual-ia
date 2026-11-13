@@ -70,6 +70,8 @@ class Scene3DSpec:
     height: int = 1920
     fps: int = 30
     render_engine: str = "eevee"
+    # Muestras de render (EEVEE/Cycles); se deriva de ``AIV_BLENDER_SAMPLES`` al mapear.
+    samples: int = 32
     seed: int | None = None
 
 

@@ -10,8 +10,10 @@ El script generado (ver docs/ENGINE-3D-ARCHITECTURE.md §2.2 y §5):
   - aplica la animación corporal del catálogo,
   - fija el rango de frames a ``round(duration_s * fps)``,
   - coloca la cámara según ``CameraSpec`` (plano/movimiento/óptica/DOF),
-  - configura EEVEE/Cycles + samples e iluminación cinematográfica key/fill/rim,
-  - fija la resolución vertical 1080x1920 y la salida a un ``.mp4`` en ``out_dir``.
+  - configura EEVEE/Cycles + samples (``AIV_BLENDER_SAMPLES``) e iluminación
+    cinematográfica key/fill/rim,
+  - fija la resolución del lienzo (derivada del aspecto del proyecto; 1080x1920 en el
+    MVP estilizado 9:16) y la salida a un ``.mp4`` en ``out_dir``.
 """
 
 from __future__ import annotations
@@ -82,7 +84,7 @@ HEIGHT = {spec.height}
 FPS = {spec.fps}
 FRAME_COUNT = {frames}
 RENDER_ENGINE = {engine!r}
-SAMPLES = {_samples_placeholder(spec)}
+SAMPLES = {int(spec.samples)}
 SEED = {spec.seed!r}
 CAMERA_SHOT = {camera.shot!r}
 CAMERA_MOVE = {camera.move!r}
@@ -253,15 +255,3 @@ if __name__ == "__main__":
 '''
 
     return header + body
-
-
-def _samples_placeholder(spec: Scene3DSpec) -> int:
-    """Muestras de render del script.
-
-    El número de samples vive en settings (``AIV_BLENDER_SAMPLES``); se lee en FEAT-303 al
-    construir el spec del runner. Para la lógica pura usamos un valor determinista derivado
-    del spec cuando no viene en él: el MVP fija 32 (default de settings) salvo override
-    futuro. Mantener determinista.
-    """
-    # Scene3DSpec no transporta samples en el MVP; se usa el default documentado (32).
-    return 32

@@ -122,3 +122,53 @@ def test_input_props_preserves_image_src_for_2d_scene(db_ready, tmp_path):
         s0, s1 = timeline.scenes
         assert s0.video_src == str(clip) and s0.image_src is None
         assert s1.image_src == str(img) and s1.video_src is None
+
+
+def test_subtitle_style_follows_production_type_not_artifact(db_ready, tmp_path):
+    """El estilo de subtítulo lo fija production_type, no la presencia de clip.
+
+    Proyecto 3D: TODAS las escenas llevan subtitleStyle='tiktok', incluso la que degrada a
+    imagen (sin clip). Así el overlay no depende del artefacto por escena.
+    """
+    with session_scope() as session:
+        project = _seed_project(session)  # production_type='3d'
+        scenes = sorted(project.scenes, key=lambda s: s.order)
+
+        clip = tmp_path / "scene_0.mp4"
+        clip.write_bytes(b"\x00\x00\x00\x18ftyp")
+        img = tmp_path / "img.png"
+        img.write_bytes(b"\x89PNG\r\n")
+
+        session.add_all(
+            [
+                Asset(project_id=project.id, scene_id=scenes[0].id, kind="video",
+                      path=str(clip), provider="blender"),
+                # Escena 3D degradada a imagen (sin clip): debe seguir siendo tiktok.
+                Asset(project_id=project.id, scene_id=scenes[1].id, kind="image",
+                      path=str(img), provider="placeholder"),
+            ]
+        )
+        session.commit()
+        session.refresh(project)
+
+        timeline = TimelineBuilder().build(project, session)
+        assert [s.subtitle_style for s in timeline.scenes] == ["tiktok", "tiktok"]
+        props = timeline.remotion_input_props()
+        assert all(s["subtitleStyle"] == "tiktok" for s in props["scenes"])
+
+
+def test_subtitle_style_classic_for_2d_project(db_ready, tmp_path):
+    """Proyecto 2D: subtitleStyle='classic' (retrocompatibilidad del MVP 2D)."""
+    with session_scope() as session:
+        project = Project(name="demo-2d", prompt="x", production_type="2d",
+                          aspect_ratio="16:9")
+        session.add(project)
+        session.flush()
+        scene = Scene(project_id=project.id, order=0, narration_text="Hola.",
+                      visual_prompt="algo", duration_s=2.0)
+        session.add(scene)
+        session.commit()
+        session.refresh(project)
+
+        timeline = TimelineBuilder().build(project, session)
+        assert [s.subtitle_style for s in timeline.scenes] == ["classic"]

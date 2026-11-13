@@ -20,6 +20,7 @@ from app.engines.engine3d.types import CameraSpec, Scene3DSpec
 class FakeAsset:
     kind: str
     meta: dict = field(default_factory=dict)
+    id: int = 0
 
 
 @dataclass
@@ -43,7 +44,7 @@ class FakeProject:
 @pytest.fixture()
 def settings(monkeypatch):
     config._settings = None
-    for var in ("AIV_RENDER_ENGINE_3D", "AIV_FPS"):
+    for var in ("AIV_RENDER_ENGINE_3D", "AIV_FPS", "AIV_BLENDER_SAMPLES"):
         monkeypatch.delenv(var, raising=False)
     s = Settings()
     yield s
@@ -116,9 +117,11 @@ def test_scene_to_spec_dimensions_and_defaults(settings):
     )
     spec = mapping.scene_to_spec(scene, FakeProject(), settings=settings)
     assert isinstance(spec, Scene3DSpec)
+    # 9:16 (MVP estilizado) -> 1080x1920 derivado de project.aspect_ratio.
     assert spec.width == 1080
     assert spec.height == 1920
     assert spec.fps == settings.fps
+    assert spec.samples == settings.blender_samples
     assert spec.render_engine == "eevee"
     assert spec.style_preset == "stylized"
     assert spec.character_id == "hero"
@@ -152,3 +155,47 @@ def test_scene_to_spec_render_engine_from_settings(monkeypatch):
     spec = mapping.scene_to_spec(FakeScene(duration_s=2.0), FakeProject(), settings=s)
     assert spec.render_engine == "cycles"
     config._settings = None
+
+
+def test_scene_to_spec_samples_from_settings(monkeypatch):
+    # AIV_BLENDER_SAMPLES se propaga al spec (ya no está fijo en 32).
+    config._settings = None
+    monkeypatch.setenv("AIV_BLENDER_SAMPLES", "128")
+    s = Settings()
+    spec = mapping.scene_to_spec(FakeScene(duration_s=2.0), FakeProject(), settings=s)
+    assert spec.samples == 128
+    config._settings = None
+
+
+def test_scene_to_spec_dimensions_from_aspect_ratio(settings):
+    # El clip deriva sus dimensiones del aspect_ratio del proyecto (como el timeline),
+    # no de una constante fija 1080x1920.
+    spec_16_9 = mapping.scene_to_spec(
+        FakeScene(duration_s=2.0), FakeProject(aspect_ratio="16:9"), settings=settings
+    )
+    assert (spec_16_9.width, spec_16_9.height) == (1920, 1080)
+
+    spec_1_1 = mapping.scene_to_spec(
+        FakeScene(duration_s=2.0), FakeProject(aspect_ratio="1:1"), settings=settings
+    )
+    assert (spec_1_1.width, spec_1_1.height) == (1080, 1080)
+
+    # 9:16 (MVP estilizado) sigue siendo 1080x1920.
+    spec_9_16 = mapping.scene_to_spec(
+        FakeScene(duration_s=2.0), FakeProject(aspect_ratio="9:16"), settings=settings
+    )
+    assert (spec_9_16.width, spec_9_16.height) == (1080, 1920)
+
+
+def test_voice_duration_prefers_highest_id(settings):
+    # "mayor id gana" (igual que TimelineBuilder._latest_by_scene): aunque el asset más
+    # reciente aparezca ANTES en la lista, su duración es la elegida.
+    scene = FakeScene(
+        duration_s=1.0,
+        assets=[
+            FakeAsset(kind="voice", meta={"duration_s": 9.9}, id=20),
+            FakeAsset(kind="voice", meta={"duration_s": 3.3}, id=5),
+        ],
+    )
+    spec = mapping.scene_to_spec(scene, FakeProject(), settings=settings)
+    assert spec.duration_s == 9.9

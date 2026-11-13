@@ -121,8 +121,12 @@ const SceneLayer: React.FC<{ scene: TimelineScene }> = ({ scene }) => {
     (cue) => timeS >= cue.startS && timeS < cue.endS,
   );
 
-  // Producción 3d: el clip de vídeo manda (y activa el estilo de subtítulos TikTok).
+  // La fuente visual la decide el artefacto (clip de vídeo si existe, si no imagen).
   const isVideo = Boolean(scene.videoSrc);
+  // El estilo de subtítulo lo decide el production_type del proyecto (campo EXPLÍCITO),
+  // no la presencia del clip: una escena 3D degradada a imagen o una 2D con vídeo
+  // conservan el overlay correcto. Default "classic" para timelines 2D previos.
+  const useTikTokSubtitle = scene.subtitleStyle === "tiktok";
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000000" }}>
@@ -152,7 +156,7 @@ const SceneLayer: React.FC<{ scene: TimelineScene }> = ({ scene }) => {
       )}
 
       {activeCue ? (
-        isVideo ? (
+        useTikTokSubtitle ? (
           <TikTokSubtitle cue={activeCue} />
         ) : (
           <ClassicSubtitle cue={activeCue} />

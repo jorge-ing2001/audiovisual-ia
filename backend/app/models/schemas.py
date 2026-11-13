@@ -20,7 +20,9 @@ class ProjectCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=200)
     prompt: str = ""
-    production_type: str = "2d"
+    # Si se omite, el router usa el default global ``settings.production_type``
+    # (AIV_PRODUCTION_TYPE); un valor explícito ('2d'/'3d') siempre manda.
+    production_type: str | None = None
     aspect_ratio: str = "16:9"
     resolution: str = "1080p"
     provider_overrides: dict | None = None

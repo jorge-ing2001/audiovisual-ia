@@ -26,6 +26,10 @@ export type TimelineScene = {
   narrationText?: string;
   // Nota de cámara (placeholder en el MVP 2D; reservado para el motor de animación).
   cameraNotes?: string;
+  // Estilo de subtítulo EXPLÍCITO derivado del production_type del proyecto (no del
+  // artefacto visual): "tiktok" en 3D, "classic" en 2D. Si falta, se asume "classic"
+  // (retrocompatibilidad con timelines 2D previos que no emiten el campo).
+  subtitleStyle?: "tiktok" | "classic";
 };
 
 export type TimelineProps = {

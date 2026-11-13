@@ -10,12 +10,14 @@ from __future__ import annotations
 from app.config import Settings, get_settings
 from app.engines.engine3d import assets
 from app.engines.engine3d.types import CameraSpec, Scene3DSpec
+from app.providers.image.aspect import aspect_to_dims
 
 __all__ = ["scene_to_spec", "camera_from_notes", "animation_from_text", "set_from_text"]
 
-# 1080x1920 vertical 9:16 fijo en el MVP (ver §4).
-_WIDTH = 1080
-_HEIGHT = 1920
+# Aspecto por defecto del MVP estilizado: vertical 9:16 -> 1080x1920 (ver §4). Las
+# dimensiones reales del clip se derivan de ``project.aspect_ratio`` (igual que el
+# timeline, vía ``aspect_to_dims``) para no divergir del lienzo del render.
+_DEFAULT_ASPECT = "9:16"
 
 # --- Cámara: palabras clave es/en -> plano / movimiento ------------------------------ #
 
@@ -135,18 +137,22 @@ def set_from_text(*texts: str | None) -> str:
 def _voice_duration_s(scene) -> float | None:
     """Duración de la voz de la escena si está disponible en sus assets (prioritaria).
 
-    Busca un ``Asset(kind='voice')`` de la escena con ``meta['duration_s']``. Devuelve
-    ``None`` si no hay voz todavía (el pipeline 3D sintetiza voz por escena, igual que 2D).
+    Busca el ``Asset(kind='voice')`` MÁS RECIENTE de la escena (mayor ``id``) con
+    ``meta['duration_s']`` y devuelve su duración. El criterio "mayor id gana" es el mismo
+    que usa ``TimelineBuilder._latest_by_scene`` (ordena por ``id``), de modo que la
+    duración que elige el mapeo 3D coincide con la del timeline. Devuelve ``None`` si no
+    hay voz todavía (el pipeline 3D sintetiza voz por escena, igual que 2D).
     """
     scene_assets = getattr(scene, "assets", None) or []
+    # Orden ascendente por id (el default 0 cubre fakes/objetos sin id persistido);
+    # recorremos de menor a mayor para que el de mayor id sea el último que fija ``best``.
+    voices = [a for a in scene_assets if getattr(a, "kind", None) == "voice"]
+    voices.sort(key=lambda a: (getattr(a, "id", 0) or 0))
     best: float | None = None
-    for asset in scene_assets:
-        if getattr(asset, "kind", None) != "voice":
-            continue
+    for asset in voices:
         meta = getattr(asset, "meta", None) or {}
         dur = meta.get("duration_s")
         if isinstance(dur, (int, float)) and dur > 0:
-            # El Asset más reciente (mayor id) gana si hay varios.
             best = float(dur)
     return best
 
@@ -159,10 +165,15 @@ def scene_to_spec(scene, project, *, settings: Settings | None = None) -> Scene3
       - ``camera``: ``camera_notes`` -> ``CameraSpec`` (defaults seguros).
       - ``character_animation``: heurística por narración/``camera_notes``.
       - ``set_id``: ``room_interior`` por defecto, ``outdoor_street`` si el texto sugiere exterior.
-      - ``style_preset='stylized'``, ``render_engine`` de settings, ``1080x1920``,
-        ``fps`` de settings.
+      - ``style_preset='stylized'``, ``render_engine``/``samples``/``fps`` de settings.
+      - ``width``/``height``: derivados de ``project.aspect_ratio`` con ``aspect_to_dims``
+        (igual que el timeline); 9:16 -> 1080x1920 en el MVP estilizado. Así el clip y el
+        lienzo del render comparten dimensiones (sin desajuste latente fuera de 9:16).
     """
     settings = settings or get_settings()
+
+    aspect = getattr(project, "aspect_ratio", None) or _DEFAULT_ASPECT
+    width, height = aspect_to_dims(aspect)
 
     voice_dur = _voice_duration_s(scene)
     if voice_dur is not None:
@@ -186,9 +197,10 @@ def scene_to_spec(scene, project, *, settings: Settings | None = None) -> Scene3
         set_id=set_id,
         camera=camera,
         style_preset="stylized",
-        width=_WIDTH,
-        height=_HEIGHT,
+        width=width,
+        height=height,
         fps=int(settings.fps),
         render_engine=settings.render_engine_3d,
+        samples=int(settings.blender_samples),
         seed=None,
     )

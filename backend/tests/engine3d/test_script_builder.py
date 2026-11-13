@@ -38,6 +38,7 @@ def _spec(**over):
         height=1920,
         fps=30,
         render_engine="eevee",
+        samples=32,
         seed=None,
     )
     base.update(over)
@@ -90,6 +91,12 @@ def test_script_uses_cycles_when_requested():
     script = build_blender_script(_spec(render_engine="cycles"), _resolved())
     assert "'CYCLES'" in script
     assert "cycles.samples = SAMPLES" in script
+
+
+def test_script_samples_come_from_spec():
+    # El número de samples viaja en el spec (derivado de AIV_BLENDER_SAMPLES), no fijo.
+    assert "SAMPLES = 32" in build_blender_script(_spec(samples=32), _resolved())
+    assert "SAMPLES = 128" in build_blender_script(_spec(samples=128), _resolved())
 
 
 def test_script_contains_cinematic_lighting_and_camera():
