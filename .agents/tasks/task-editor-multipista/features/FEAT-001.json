@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Configuracion de entorno y baseline verde. Instalar dependencias de backend/frontend/remotion, anadir la dependencia @remotion/player al frontend, confirmar que la suite existente pasa (baseline ~145 passed / 2 skipped con ffmpeg) y que frontend/remotion compilan (build/lint/tsc). No implementa el editor; solo deja el entorno listo y el baseline documentado para el vertical slice.",
+  "status": "pending",
+  "steps": [
+    "Si no existe, crear backend/.venv y ejecutar: cd backend && python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' y pip install -e '.[voice]' (numpy/soundfile necesarios para los tests de audio/render).",
+    "Ejecutar la suite backend con ffmpeg: cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q . Registrar el conteo exacto (esperado alrededor de 145 passed / 2 skipped; los tests de render completo pueden saltarse si Chromium no esta disponible).",
+    "Frontend: cd frontend && npm install ; luego anadir la dependencia @remotion/player (misma linea major que remotion, ^4.0.0) con npm install @remotion/player@^4.0.0 ; confirmar npm run build && npm run lint && npm run typecheck.",
+    "Remotion: cd remotion && npm install && npm run typecheck.",
+    "Anotar en el findings del feature: conteo de pytest, versiones (python/node/ffmpeg), y que @remotion/player quedo en frontend/package.json."
+  ],
+  "acceptance_criteria": [
+    "pytest en backend/ termina sin fallos (passed + skipped, 0 failed) con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN apuntando a /projects/sandbox/.localbin.",
+    "frontend: npm run build, npm run lint y npm run typecheck terminan con exito.",
+    "remotion: npm run typecheck termina con exito.",
+    "frontend/package.json incluye @remotion/player en dependencies (misma major ^4.0.0 que remotion)."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

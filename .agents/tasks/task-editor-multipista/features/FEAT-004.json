@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Completar las operaciones del MVP del editor sobre el slice ya funcional: edicion de audio (volumen por pista, fades, reposicionar musica/SFX), edicion de subtitulos (tipografia/tamano/color/posicion/estilo completos), edicion de imagenes/videos (reemplazo de recurso, transform escala/posicion/encuadre fit, duracion), y transiciones basicas entre escenas (corte/fade). Cablear cada operacion extremo a extremo (operacion pura en backend -> persistencia/Version -> compilador preview/export -> inspector del frontend). NO entra lo diferido a iteraciones futuras (keyframes de camara, efectos avanzados, reencuadre fino, curvas de volumen): ver docs/EDITOR-MVP-SCOPE.md secciones 2 y 3. Depende de FEAT-002 y FEAT-003.",
+  "status": "pending",
+  "steps": [
+    "backend/app/engines/editor/operations.py: anadir/completar operaciones puras: set_track_volume y set_fade (audio); set_style (font_family/font_size/color/bg_color/bold/outline/position/preset) y split/merge de subtitulos; replace_asset, set_transform (scale/x/y/crop/fit) y set_duration (visual); set_transition (type none|fade + duration_s). Validar invariantes y anadir casos a backend/tests/editor/test_operations.py.",
+    "backend/app/engines/editor/compile.py: reflejar en compile_remotion_props el estilo completo de subtitulos y el transform/transiciones de los clips visuales; reflejar en compile_audio_tracks el volumen de pista, fades y reposicion. Ampliar backend/tests/editor/test_compile.py para cubrir estilo de subtitulo, transform y fades/volumen de pista (verificar que la sincronia y los valores llegan correctos).",
+    "remotion/src/EditComposition.tsx: aplicar el estilo completo de subtitulos (tipografia/tamano/color/fondo/negrita/contorno/posicion) y el transform visual (scale/x/y/crop/fit) y la transicion fade entre clips. Mantener la paridad preview/export (mismos inputProps).",
+    "frontend/components/EditorWorkspace.tsx (inspector): exponer los controles para cada operacion nueva (volumen de pista y fades; estilo de subtitulo completo; transform y reemplazo de recurso con selector de Asset del proyecto via listAssets; transicion entre escenas). Cada control llama a applyEditOp o putEditProject y el Player refleja el cambio.",
+    "Verificacion: tests puros backend (operations/compile) verdes; frontend build/lint/tsc; remotion tsc; y donde el render corra, un test de export (reutilizar/extender backend/tests/editor/test_edit_export.py) que incluya un subtitulo con estilo y un clip con transform y verifique con ffprobe streams+duracion (o se salte con razon)."
+  ],
+  "acceptance_criteria": [
+    "operations.py cubre audio (set_track_volume, set_fade), subtitulos (set_style completo, split/merge), visual (replace_asset, set_transform, set_duration) y transiciones (set_transition), todas puras y validadas por tests.",
+    "El compilador propaga estilo de subtitulo, transform visual y volumen/fades de audio a inputProps y MixTracks; cubierto por test_compile.py.",
+    "El inspector del frontend permite editar audio/subtitulos/imagenes-videos/transiciones y cada cambio se persiste y se refleja en el Player.",
+    "Tests puros backend verdes; frontend build/lint/tsc y remotion tsc en verde; el export sigue produciendo un MP4 verificable con ffprobe (o se salta con razon).",
+    "La suite backend completa sigue sin fallos; no se rompe la generacion ni la composicion Timeline original."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

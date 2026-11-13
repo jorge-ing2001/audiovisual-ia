@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Composicion Remotion multipista (EditComposition) compartida entre preview y export, y espacio de edicion en el frontend: boton «Editar video» tras la generacion, ruta /projects/[id]/editor con Remotion Player (preview en tiempo real con audio por pista), linea de tiempo multipista, inspector de clip, undo/redo y exportacion. Cierra el vertical slice end-to-end: lo que ves en el Player = lo que exporta el job edit_export de FEAT-002. Depende de FEAT-002. Ver docs/EDITOR-MULTITRACK-ARCHITECTURE.md secciones 6 y 8.",
+  "status": "pending",
+  "steps": [
+    "Remotion: crear remotion/src/EditComposition.tsx (composicion multipista) que recibe los inputProps de compile_remotion_props: pistas visuales (clips con from/durationInFrames, src por asset, transform scale/x/y/fit, transicion in/out fade basica) dibujadas con <Sequence>+<Img>/<OffthreadVideo>, y pista de subtitulos con estilo (generalizar los overlays ClassicSubtitle/TikTokSubtitle de TimelineComposition.tsx parametrizados por style font/size/color/position/preset). Anadir <Audio> por clip de voz/musica/sfx dentro de <Sequence> (volume = gain efectivo) para el PREVIEW, con un prop 'muted' que las desactiva en el render headless de export (evita doble audio con AudioMixer).",
+    "Registrar EditComposition en remotion/src/Root.tsx como una segunda <Composition id='Edit'> junto a 'Timeline' (conservar Timeline intacta); derivar duracion/fps/resolucion con calculateMetadata desde los inputProps. Actualizar remotion/src/types.ts con los tipos del EditProject compilado (pistas/clips/subtitulos).",
+    "Extender remotion/scripts/render.mjs para aceptar --composition <id> (default 'Timeline') y pasar muted=true en los inputProps del export, de modo que compose_edit de FEAT-002 renderice el video mudo con la composicion 'Edit'. Confirmar que selectComposition usa el id recibido.",
+    "Frontend tipos: frontend/lib/editor/types.ts espejo del EditProject (EditProject/EditTrack/EditClip) alineado con los esquemas Pydantic de FEAT-002.",
+    "Frontend cliente API: anadir a frontend/lib/api.ts funciones tipadas openEditor, getEditProject, putEditProject, applyEditOp, undoEdit, redoEdit, getEditHistory, enqueueEditExport, latestEditExport (espejo de los endpoints de app/api/editor.py).",
+    "Frontend ruta: frontend/app/projects/[id]/editor/page.tsx (patron de app/projects/[id]/page.tsx) que renderiza un componente EditorWorkspace con el projectId.",
+    "Frontend componente frontend/components/EditorWorkspace.tsx: al montar hace openEditor + getEditProject; integra el Remotion Player (@remotion/player <Player component={EditComposition} inputProps={...} controls />) usando el EditProject del estado React (cada edicion re-renderiza el Player). Resolver las URLs de media con assetDownloadUrl(assetId) de frontend/lib/api.ts (opcion A de la seccion 6.2). Incluir: panel de linea de tiempo multipista con pistas y clips; inspector del clip seleccionado (volumen/posicion audio; texto/tiempos/estilo subtitulo; transform/duracion visual; reemplazo de recurso); botones undo/redo; boton Exportar que llama enqueueEditExport y hace polling (reutilizar frontend/components/JobProgress.tsx y frontend/lib/useJobPolling.ts) y descarga con videoDownloadUrl.",
+    "Boton «Editar video»: anadir en frontend/components/RenderPanel.tsx (junto a «Descargar MP4», visible cuando videoReady) y/o en frontend/components/ProjectWorkspace.tsx, un Link a /projects/[id]/editor con el texto «Editar video».",
+    "Verificar frontend (npm run build && npm run lint && npm run typecheck) y remotion (npm run typecheck). Documentar un smoke manual del preview (arrancar backend + frontend, abrir el editor de un proyecto con video, comprobar que el Player carga media y suena) ya que la verificacion visual completa del Player corre en navegador."
+  ],
+  "acceptance_criteria": [
+    "remotion/src/EditComposition.tsx existe, esta registrada como <Composition id='Edit'> en Root.tsx, y la composicion 'Timeline' original se conserva sin cambios de comportamiento.",
+    "remotion/scripts/render.mjs acepta --composition y renderiza la composicion 'Edit' muda (muted=true) para el export de FEAT-002.",
+    "frontend/app/projects/[id]/editor/page.tsx y frontend/components/EditorWorkspace.tsx existen; el Player se alimenta del EditProject y las URLs de media salen de assetDownloadUrl.",
+    "El boton «Editar video» aparece tras la generacion (RenderPanel/ProjectWorkspace) y navega a /projects/[id]/editor.",
+    "El inspector permite editar clips (audio volumen/posicion, subtitulo texto/tiempos/estilo, visual transform/duracion, reemplazo de recurso) y cada cambio llama al backend (putEditProject o applyEditOp) y se refleja en el Player.",
+    "Undo/redo y Exportar estan cableados a los endpoints reales; Exportar hace polling del job y permite descargar el MP4."
+  ],
+  "verification": [
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q tests/editor"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
