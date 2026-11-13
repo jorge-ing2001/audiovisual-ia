@@ -9,7 +9,12 @@ FEAT-003/004 y viven en sus propios módulos; aquí no hay lógica de proveedor.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    # El artefacto de la capacidad 'clip' vive en el motor 3D (lógica pura). Se importa
+    # solo para tipado para no acoplar los contratos de providers con el motor en runtime.
+    from app.engines.engine3d.types import Scene3DSpec, VideoClip
 
 # --------------------------------------------------------------------------- #
 # Dataclasses de artefactos
@@ -105,3 +110,14 @@ class ASRProvider(Protocol):
     """Transcribe audio a tiempos de palabra (alineación para subtítulos)."""
 
     def transcribe(self, audio_path: str) -> list[WordTiming]: ...
+
+
+@runtime_checkable
+class ClipProvider(Protocol):
+    """Produce un clip de vídeo por escena (capacidad 'clip', Fase 3).
+
+    Default local: Blender headless (``BlenderClipProvider`` sobre ``BlenderEngine3D``).
+    Conmutable a proveedores de pago futuros (Veo/Runway/Kling) vía ``AIV_CLIP_BACKEND``.
+    """
+
+    def clip_for(self, scene_spec: "Scene3DSpec", out_dir: str) -> "VideoClip": ...

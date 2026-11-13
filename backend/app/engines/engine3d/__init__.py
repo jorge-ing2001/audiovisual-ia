@@ -7,7 +7,7 @@ en ``docs/ENGINE-3D-ARCHITECTURE.md`` y alcance del MVP estilizado en
 
 El motor se parte en dos capas con una frontera dura (ver §2.2 de la arquitectura):
 
-  * **Capa pura (sin Blender, 100% testeable en el sandbox)** — ya implementada aquí:
+  * **Capa pura (sin Blender, 100% testeable en el sandbox)**:
       - :mod:`~app.engines.engine3d.types`: dataclasses ``Scene3DSpec``, ``CameraSpec``,
         ``VideoClip``, el ``Protocol`` ``Engine3D`` y la excepción ``Engine3DUnavailable``.
       - :mod:`~app.engines.engine3d.assets`: catálogo acotado + resolución de rutas.
@@ -16,15 +16,19 @@ El motor se parte en dos capas con una frontera dura (ver §2.2 de la arquitectu
         script ``.py`` de Blender, determinista).
       - :mod:`~app.engines.engine3d.output_parser`: parsing de stdout/stderr -> ``VideoClip``.
 
-  * **Capa de ejecución (requiere Blender real, SE SALTA en el sandbox)** — llega en
-    FEAT-303 (``runner.py``). Mientras tanto, el import del paquete NO falla sin Blender;
-    solo la ejecución real está sin implementar: :func:`render_sequence` lanza
-    ``NotImplementedError`` hasta FEAT-303. Nunca se simula un clip (requisito §9 del
-    prompt maestro).
+  * **Capa de ejecución (requiere Blender real, SE SALTA en el sandbox)**:
+      - :class:`~app.engines.engine3d.runner.BlenderEngine3D` (FEAT-303): invoca
+        ``blender -b -P <script> -- <out_dir>`` como subproceso con timeout.
+
+Importar el paquete NUNCA falla sin Blender: la indisponibilidad se gestiona en tiempo de
+ejecución vía ``BlenderEngine3D.available()`` (``False`` sin binario) y
+``Engine3DUnavailable`` (lanzada por ``render_sequence``). Nunca se simula un clip
+(requisito §9 del prompt maestro).
 """
 
 from __future__ import annotations
 
+from app.engines.engine3d.runner import BlenderEngine3D
 from app.engines.engine3d.types import (
     CameraSpec,
     Engine3D,
@@ -34,35 +38,10 @@ from app.engines.engine3d.types import (
 )
 
 __all__ = [
+    "BlenderEngine3D",
     "CameraSpec",
     "Engine3D",
     "Engine3DUnavailable",
     "Scene3DSpec",
     "VideoClip",
-    "render_sequence",
-    "available",
 ]
-
-
-def available() -> bool:
-    """¿Hay un binario de Blender utilizable? La detección real llega en FEAT-303.
-
-    Hasta que exista el ``runner``, el motor se considera NO disponible (no hay forma de
-    renderizar sin la capa de ejecución), de modo que la capa superior/tests salten el
-    render real con razón en vez de simular un clip.
-    """
-    return False
-
-
-def render_sequence(spec: Scene3DSpec, out_dir: str) -> VideoClip:
-    """Render real de la escena (Blender headless). Reservado a FEAT-303.
-
-    La lógica pura (``script_builder``/``mapping``/``output_parser``/``assets``) ya está
-    disponible; la ejecución del subproceso de Blender se implementa en ``runner.py``
-    (FEAT-303). No se simula un clip.
-    """
-    raise NotImplementedError(
-        "La ejecución real del motor 3D (Blender headless) llega en FEAT-303 (runner.py). "
-        "La lógica pura ya está disponible en app.engines.engine3d.{types,assets,mapping,"
-        "script_builder,output_parser}."
-    )

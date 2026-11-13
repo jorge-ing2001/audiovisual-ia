@@ -23,13 +23,14 @@ from app.config import get_settings
 from app.providers import fakes
 
 # Capacidades soportadas y su variable de entorno de selección.
-CAPABILITIES = ("llm", "image", "tts", "asr")
+CAPABILITIES = ("llm", "image", "tts", "asr", "clip")
 
 _ENV_FIELD: dict[str, str] = {
     "llm": "llm_backend",
     "image": "image_backend",
     "tts": "tts_backend",
     "asr": "asr_backend",
+    "clip": "clip_backend",
 }
 
 # Factoría = callable sin argumentos que construye una instancia del proveedor.
@@ -44,6 +45,7 @@ PROVIDERS: dict[str, dict[str, Factory]] = {
     "image": {"fake": fakes.FakeImage},
     "tts": {"fake": fakes.FakeTTS},
     "asr": {"fake": fakes.FakeASR},
+    "clip": {"fake": fakes.FakeClip},
 }
 
 
@@ -67,6 +69,12 @@ def _register_builtin_providers() -> None:
     registry) y para que registrar un backend siga siendo un acto explícito.
     """
     from app.providers.asr.faster_whisper import FasterWhisper
+    from app.providers.clip.blender import BlenderClipProvider
+    from app.providers.clip.paid import (
+        KlingClipProvider,
+        RunwayClipProvider,
+        VeoClipProvider,
+    )
     from app.providers.image.placeholder import PlaceholderProvider
     from app.providers.image.stock import StockImageProvider
     from app.providers.llm.ollama import OllamaLLM
@@ -84,6 +92,15 @@ def _register_builtin_providers() -> None:
     register("tts", "elevenlabs", ElevenLabsTTS)
     register("tts", "openai", OpenAITTS)
     register("asr", "faster_whisper", FasterWhisper)
+
+    # Capacidad 'clip' (Fase 3): default local 'blender' (motor 4). Los proveedores de
+    # pago (Veo/Runway/Kling) se dejan DECLARADOS como stubs conmutables cuyas factorías
+    # lanzan NotImplementedError al construirse, preservando la vía de pago futura (ver
+    # docs/ENGINE-3D-ARCHITECTURE.md §3.2 y §10). No se eliminan ni se simplifican.
+    register("clip", "blender", BlenderClipProvider)
+    register("clip", "veo", VeoClipProvider)
+    register("clip", "runway", RunwayClipProvider)
+    register("clip", "kling", KlingClipProvider)
 
 
 _register_builtin_providers()
