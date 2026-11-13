@@ -153,6 +153,48 @@ export function ProgressBar({ value }: { value: number }) {
   );
 }
 
+/**
+ * Modal básico (overlay + panel) para previsualizar recursos (p. ej. imágenes).
+ * Cierra al pulsar el fondo o el botón. Sin dependencias externas.
+ */
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: string;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col gap-4 overflow-hidden rounded-xl border border-neutral-700 bg-neutral-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold text-neutral-100">{title ?? "Vista previa"}</h3>
+          <Button variant="ghost" onClick={onClose} aria-label="Cerrar">
+            ✕
+          </Button>
+        </div>
+        <div className="flex-1 overflow-auto">{children}</div>
+        {footer && <div className="flex justify-end gap-2">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
 export function ErrorBanner({ message }: { message: string }) {
   return (
     <div className="rounded-md border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">

@@ -238,6 +238,62 @@ export function regenerateSceneImage(
   });
 }
 
+/**
+ * Genera la imagen de una escena con el motor visual (FEAT-B «Generar imagen»).
+ *
+ * Con `force=false` reutiliza la cache del motor (primera generación); es el camino
+ * natural de «Generar» cuando la escena aún no tiene imagen. Comparte endpoint con
+ * `regenerateSceneImage` (que usa `force=true` para forzar una alternativa nueva).
+ */
+export function generateSceneImage(
+  sceneId: number,
+  body: SceneImageRequest = { force: false },
+): Promise<Asset> {
+  return request<Asset>(`/scenes/${sceneId}/image`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Sube una imagen propia del usuario y la asocia a la escena (FEAT-B «Subir imagen»).
+ *
+ * Envía `multipart/form-data` al endpoint real del backend
+ * (`POST /scenes/{id}/image/upload`). El backend valida tipo/tamaño, guarda el fichero
+ * dentro del workspace del proyecto y crea un `Asset(kind='image', provider='upload')`
+ * que, por ser el más reciente de la escena, el timeline/render usa automáticamente.
+ */
+export async function uploadSceneImage(sceneId: number, file: File): Promise<Asset> {
+  const form = new FormData();
+  form.append("file", file);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/scenes/${sceneId}/image/upload`, {
+      method: "POST",
+      cache: "no-store",
+      body: form,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error de red";
+    throw new ApiError(
+      0,
+      `No se pudo contactar con el backend (${API_BASE_URL}): ${message}`,
+    );
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (body.detail) detail = JSON.stringify(body.detail);
+    } catch {
+      // cuerpo no-JSON
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as Asset;
+}
+
 // --------------------------------------------------------------------------- //
 // Assets (/assets)
 // --------------------------------------------------------------------------- //
