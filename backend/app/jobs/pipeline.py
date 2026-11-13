@@ -423,17 +423,19 @@ def generate_video_handler(payload: dict | None, job_id: int) -> dict:
         _register_project_audio(project, session, options)
         progress.finish(STEP_AUDIO, detail="pista de audio preparada")
 
-        # 4) Subtítulos (si el ASR está disponible; si no, se omiten sin inventar tiempos).
-        progress.start(STEP_SUBTITLES, detail="subtítulos (ASR)")
+        # 4) Subtítulos: ASR real si está disponible; si no, derivados del texto de la
+        #    narración por escena (determinista, etiquetado 'text-derived'). Siempre se
+        #    generan mientras haya voz + texto, para que se quemen en el MP4.
+        progress.start(STEP_SUBTITLES, detail="subtítulos (ASR o derivados del texto)")
         session.refresh(project)
         subtitle_asset = VoiceEngine().generate_subtitles(project, session)
-        progress.finish(
-            STEP_SUBTITLES,
-            detail=(
-                "subtítulos generados" if subtitle_asset
-                else "ASR no disponible: sin subtítulos"
-            ),
-        )
+        if subtitle_asset is not None:
+            detail = (
+                f"subtítulos generados (fuente={(subtitle_asset.meta or {}).get('source')})"
+            )
+        else:
+            detail = "sin voz/texto: no hay subtítulos que generar"
+        progress.finish(STEP_SUBTITLES, detail=detail)
 
         # 5) + 6) Timeline + render Remotion + mux FFmpeg -> MP4 (RenderEngine.compose).
         progress.start(STEP_TIMELINE, detail="ensamblando timeline")

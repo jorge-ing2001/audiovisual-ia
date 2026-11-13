@@ -23,6 +23,7 @@ from app.engines.voice.recorded import RecordedVoiceEngine, RecordedVoiceResult
 from app.engines.voice.subtitles import (
     Cue,
     apply_corrections,
+    cues_from_text,
     cues_from_word_timings,
     cues_per_word,
     words_payload,
@@ -46,6 +47,7 @@ __all__ = [
     "RecordedVoiceEngine",
     "RecordedVoiceResult",
     "Cue",
+    "cues_from_text",
     "cues_from_word_timings",
     "cues_per_word",
     "apply_corrections",

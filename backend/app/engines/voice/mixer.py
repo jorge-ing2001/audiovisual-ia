@@ -36,10 +36,17 @@ __all__ = ["MixTrack", "MixResult", "AudioMixer", "FfmpegError"]
 
 @dataclass
 class MixTrack:
-    """Una pista de la mezcla: ruta al audio y ganancia relativa (1.0 = sin cambio)."""
+    """Una pista de la mezcla: ruta al audio, ganancia y posición temporal.
+
+    ``delay_s`` posiciona la pista en la línea de tiempo de la mezcla (segundos desde
+    t=0). Se usa para SECUENCIAR las voces por escena: cada voz arranca en el offset
+    acumulado de su escena en lugar de sonar todas en paralelo desde t=0. La música/SFX
+    de fondo dejan ``delay_s=0.0`` para cubrir todo el vídeo.
+    """
 
     path: str
     gain: float = 1.0
+    delay_s: float = 0.0
 
 
 @dataclass
@@ -95,18 +102,48 @@ class AudioMixer:
 
     # --- helpers de filtros ------------------------------------------------- #
 
+    @staticmethod
+    def _delay_ms(delay_s: float) -> int:
+        """Delay en milisegundos (entero, nunca negativo) para ``adelay``."""
+        return max(0, int(round(delay_s * 1000)))
+
+    def _prep_track(self, index: int, track: MixTrack) -> tuple[str, str]:
+        """Prepara una pista (ganancia + posición temporal). Devuelve (fragmento, label).
+
+        La ganancia se aplica con ``volume`` y la posición con ``adelay`` (un retardo por
+        canal, ``all=1`` para cubrir estéreo y mono). Un ``delay_s`` > 0 rellena el hueco
+        inicial con silencio, de modo que la pista arranca en su offset de escena.
+        """
+        label = f"a{index}"
+        steps = [f"volume={track.gain}"]
+        delay_ms = self._delay_ms(track.delay_s)
+        if delay_ms > 0:
+            steps.append(f"adelay={delay_ms}:all=1")
+        body = ",".join(steps)
+        return f"[{index}:a]{body}[{label}]", f"[{label}]"
+
     def _mix_filter(self, tracks: list[MixTrack]) -> str:
-        """Construye el grafo de entrada que combina las pistas antes de loudnorm."""
-        if len(tracks) == 1:
+        """Construye el grafo de entrada que combina las pistas antes de loudnorm.
+
+        Cada pista se posiciona en su ``delay_s`` (``adelay``) para que las voces de las
+        escenas suenen SECUENCIADAS (no superpuestas) y se suman con ``amix`` usando
+        ``duration=longest`` (la mezcla dura hasta el final de la última pista). Una sola
+        pista sin delay se pasa directa; una sola pista con delay también se posiciona.
+        """
+        if len(tracks) == 1 and self._delay_ms(tracks[0].delay_s) == 0:
             if tracks[0].gain != 1.0:
                 return f"[0:a]volume={tracks[0].gain}[mix]"
             return "[0:a]anull[mix]"
         parts = []
         labels = []
         for i, track in enumerate(tracks):
-            label = f"a{i}"
-            parts.append(f"[{i}:a]volume={track.gain}[{label}]")
-            labels.append(f"[{label}]")
+            fragment, label = self._prep_track(i, track)
+            parts.append(fragment)
+            labels.append(label)
+        if len(tracks) == 1:
+            # Única pista con delay: ya quedó posicionada; solo renombrar a [mix].
+            parts.append(f"{labels[0]}anull[mix]")
+            return ";".join(parts)
         joined = "".join(labels)
         parts.append(
             f"{joined}amix=inputs={len(tracks)}:duration=longest:"

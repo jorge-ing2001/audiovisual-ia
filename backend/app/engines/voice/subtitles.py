@@ -125,6 +125,48 @@ def _cue_from_group(group: list[WordTiming]) -> Cue:
     return Cue(t0=group[0].start_s, t1=group[-1].end_s, text=text)
 
 
+def cues_from_text(
+    text: str,
+    *,
+    start_s: float,
+    duration_s: float,
+    max_words_per_cue: int = 7,
+) -> list[Cue]:
+    """Reparte ``text`` en cues uniformes dentro de ``[start_s, start_s+duration_s)``.
+
+    Fallback DETERMINISTA cuando no hay ASR disponible: NO estima tiempos por palabra
+    (eso lo haría el ASR real), sino que divide el texto de la narración en grupos de
+    hasta ``max_words_per_cue`` palabras y reparte la duración de la escena de forma
+    proporcional al nº de palabras de cada grupo. Es un derivado del guion (texto), no
+    una transcripción simulada: los tiempos son aproximados y así se etiqueta en el
+    Asset (``provider='text-derived'``). Devuelve [] si no hay texto o duración.
+    """
+    words = [w for w in (text or "").split() if w.strip()]
+    if not words or duration_s <= 0:
+        return []
+
+    groups: list[list[str]] = [
+        words[i : i + max_words_per_cue]
+        for i in range(0, len(words), max_words_per_cue)
+    ]
+    total_words = sum(len(g) for g in groups)
+    cues: list[Cue] = []
+    cursor = start_s
+    end_limit = start_s + duration_s
+    for group in groups:
+        span = duration_s * (len(group) / total_words)
+        t0 = round(cursor, 3)
+        t1 = round(min(cursor + span, end_limit), 3)
+        if t1 <= t0:
+            t1 = round(min(t0 + 0.001, end_limit), 3)
+        cues.append(Cue(t0=t0, t1=t1, text=" ".join(group)))
+        cursor += span
+    # Ajusta el último cue para que cierre exactamente al final de la escena.
+    if cues:
+        cues[-1].t1 = round(end_limit, 3)
+    return cues
+
+
 # --------------------------------------------------------------------------- #
 # Exportación
 # --------------------------------------------------------------------------- #

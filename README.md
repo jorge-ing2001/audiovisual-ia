@@ -23,7 +23,7 @@ El usuario describe una idea en lenguaje natural y la plataforma la transforma e
 | LLM (por defecto) | Ollama local (`llama3.1:8b`) |
 | Imágenes (por defecto) | Proveedor conmutable, backend local/stock gratuito (Pexels/Pixabay + placeholders generados) |
 | Voz/TTS (por defecto) | Kokoro (offline) o edge-tts, reutilizados de lemo-opuscar |
-| Subtítulos | faster-whisper (local) |
+| Subtítulos | faster-whisper (local); si no está disponible, fallback determinista derivado del texto de la narración por escena (etiquetado `text-derived`, nunca presentado como transcripción real) |
 
 ## Estructura del monorepo
 

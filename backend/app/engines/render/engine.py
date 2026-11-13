@@ -43,6 +43,23 @@ __all__ = [
 ]
 
 
+def _timeline_scene_db_id(timeline_scene_id: str) -> int | None:
+    """Extrae el id de escena en BD del id del timeline (``scene_{order}_{db_id}``).
+
+    ``TimelineBuilder`` compone el id de cada escena del timeline como
+    ``f"scene_{scene.order}_{scene.id}"``; aquí recuperamos el ``scene.id`` (BD) para
+    poder casar cada pista de voz con el offset temporal de su escena. Devuelve ``None``
+    si el formato no coincide (en cuyo caso la voz se trata como pista global sin delay).
+    """
+    parts = str(timeline_scene_id).split("_")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[-1])
+    except ValueError:
+        return None
+
+
 class RenderUnavailable(RuntimeError):
     """El render de Remotion no se puede ejecutar aquí (p. ej. sin Chromium/glibc)."""
 
@@ -103,7 +120,7 @@ class RenderEngine:
 
         self._run_remotion(timeline_path, silent_video)
 
-        audio_path = self._mix_audio(project, workspace)
+        audio_path = self._mix_audio(project, workspace, timeline)
         self._mux(silent_video, audio_path, final_video)
 
         asset = Asset(
@@ -209,9 +226,14 @@ class RenderEngine:
                 f"({out_path}); render no disponible en este entorno."
             )
 
-    def _mix_audio(self, project: Project, workspace: Path) -> str | None:
-        """Mezcla voz + música + SFX del proyecto a ~-14 LUFS. Devuelve ``None`` si no hay audio."""
-        tracks = self._audio_tracks(project)
+    def _mix_audio(self, project: Project, workspace: Path, timeline: Timeline) -> str | None:
+        """Mezcla voz (secuenciada por escena) + música + SFX a ~-14 LUFS.
+
+        Devuelve ``None`` si no hay audio. Las voces se posicionan en el offset temporal
+        de su escena (tomado del ``timeline``) para que suenen una tras otra y no en
+        paralelo desde t=0 (BUG de audio superpuesto).
+        """
+        tracks = self._audio_tracks(project, timeline)
         if not tracks:
             return None
         out = workspace / "mix.wav"
@@ -219,15 +241,34 @@ class RenderEngine:
         return result.path
 
     @staticmethod
-    def _audio_tracks(project: Project) -> list[MixTrack]:
-        """Construye las pistas de la mezcla: voz (orden de escena) + música + SFX."""
+    def _audio_tracks(project: Project, timeline: Timeline) -> list[MixTrack]:
+        """Construye las pistas de la mezcla: voz SECUENCIADA por escena + música + SFX.
+
+        Cada voz de escena se posiciona en el offset temporal acumulado de su escena
+        (el mismo que usa ``TimelineBuilder`` para encadenar las imágenes): la voz de la
+        escena 1 empieza en t=0, la de la escena 2 en t=dur(escena 1), etc. Así las voces
+        NO se superponen (salvo que el guion lo indicara en el futuro) y quedan
+        sincronizadas con su imagen. La música/SFX de proyecto permanecen como pista(s) de
+        fondo a lo largo de todo el vídeo (``delay_s=0``), atenuadas.
+        """
+        # Offset de inicio (segundos) de cada escena, indexado por id de escena en BD.
+        # El id del timeline tiene la forma "scene_{order}_{db_id}"; extraemos el db_id.
+        offset_by_scene: dict[int, float] = {}
+        offset_s = 0.0
+        for tscene in timeline.scenes:
+            db_id = _timeline_scene_db_id(tscene.id)
+            if db_id is not None:
+                offset_by_scene[db_id] = offset_s
+            offset_s += float(tscene.duration_s)
+
         voice = [a for a in project.assets if a.kind == "voice"]
         # La voz manda; música/SFX se atenúan (misma convención que el AudioMixer).
-        tracks: list[MixTrack] = [
-            MixTrack(path=a.path, gain=1.0)
-            for a in sorted(voice, key=lambda a: a.id)
-            if Path(a.path).is_file()
-        ]
+        tracks: list[MixTrack] = []
+        for a in sorted(voice, key=lambda a: a.id):
+            if not Path(a.path).is_file():
+                continue
+            delay_s = offset_by_scene.get(a.scene_id, 0.0) if a.scene_id is not None else 0.0
+            tracks.append(MixTrack(path=a.path, gain=1.0, delay_s=delay_s))
         for a in project.assets:
             if a.kind == "music" and Path(a.path).is_file():
                 tracks.append(MixTrack(path=a.path, gain=0.3))

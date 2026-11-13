@@ -16,6 +16,7 @@ script con el intérprete de Python actual, devolviendo los ``AudioAsset`` resul
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,39 @@ def script_path(relative: str) -> Path:
     if not path.is_file():
         raise LemoNotAvailable(f"No se encontró {relative} en lemo-opuscar: {path}")
     return path
+
+
+def lemo_python() -> str:
+    """Resuelve el intérprete de Python que ejecuta los scripts TTS de lemo-opuscar.
+
+    Multiplataforma (el proyecto corre en el PC local del usuario: Windows, macOS o
+    Linux). Orden de resolución:
+
+      1. ``AIV_LEMO_PYTHON`` (override explícito): se usa tal cual si existe.
+      2. El Python del venv propio de lemo-opuscar: ``.venv/Scripts/python.exe`` en
+         Windows y ``.venv/bin/python`` en POSIX.
+      3. ``sys.executable`` como último recurso si el venv de lemo no existe (los scripts
+         pueden funcionar con las dependencias instaladas en el entorno actual).
+    """
+    override = os.environ.get("AIV_LEMO_PYTHON")
+    if override:
+        if Path(override).is_file():
+            return override
+        raise LemoNotAvailable(
+            f"AIV_LEMO_PYTHON apunta a un intérprete inexistente: {override}"
+        )
+
+    venv = lemo_path() / ".venv"
+    candidates = (
+        venv / "Scripts" / "python.exe",  # Windows
+        venv / "bin" / "python",          # macOS / Linux
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    # Sin venv propio de lemo: usar el intérprete actual como fallback.
+    return sys.executable
 
 
 def _build_lines_payload(
@@ -104,17 +138,9 @@ def run_tts_script(
     lines_file = out / "lines.json"
     lines_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-        # Utilizar siempre el entorno virtual propio de Lemo-OpusCar.
-    python_exe = lemo_path() / ".venv" / "Scripts" / "python.exe"
-
-    if not python_exe.is_file():
-        raise LemoNotAvailable(
-            f"No se encontró el Python del entorno virtual de Lemo: {python_exe}"
-        )
-
-    cmd = [str(python_exe), str(script), str(lines_file), str(out)]
-
-    import os
+    # Intérprete del venv de lemo-opuscar (multiplataforma, con override y fallback).
+    python_exe = lemo_python()
+    cmd = [python_exe, str(script), str(lines_file), str(out)]
 
     run_env = os.environ.copy()
     if env:
@@ -122,13 +148,13 @@ def run_tts_script(
 
     try:
         proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=run_env,
-        cwd=str(lemo_path()),
-)
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=run_env,
+            cwd=str(lemo_path()),
+        )
     except FileNotFoundError as exc:  # intérprete no encontrado (no debería pasar)
         raise LemoNotAvailable(f"No se pudo ejecutar {relative_script}: {exc}") from exc
     except subprocess.TimeoutExpired as exc:

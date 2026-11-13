@@ -18,7 +18,9 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.engines.voice.subtitles import (
+    Cue,
     apply_corrections,
+    cues_from_text,
     cues_from_word_timings,
     write_srt,
     write_words_json,
@@ -157,47 +159,43 @@ class VoiceEngine:
         max_words_per_cue: int = 7,
         corrections: dict[str, str] | None = None,
     ) -> Asset | None:
-        """Genera subtítulos ``.srt`` del proyecto a partir de los tiempos del ASR.
+        """Genera subtítulos ``.srt`` del proyecto, sincronizados con el audio por escena.
 
-        Transcribe cada WAV de voz (en orden de escena), desplaza los tiempos por el
-        offset acumulado de las líneas previas, aplica el diccionario de correcciones
-        (si se pasa) y escribe un único ``.srt`` (por línea) más un ``palabras.json``
-        (palabra-por-palabra) para el render. Devuelve ``None`` (sin persistir) si el
-        ASR no está disponible, en vez de inventar tiempos.
+        Camino preferente (ASR real): transcribe cada WAV de voz (en orden de escena),
+        desplaza los tiempos por el offset acumulado de las líneas previas, aplica el
+        diccionario de correcciones (si se pasa) y escribe un único ``.srt`` por línea más
+        un ``palabras.json`` (palabra-por-palabra) con tiempos reales del ASR.
+
+        Fallback DETERMINISTA (sin ASR): cuando faster-whisper/su modelo no están
+        disponibles se derivan los cues del TEXTO de narración de cada escena, repartidos
+        proporcionalmente en la duración de la escena (``cues_from_text``). No se inventa
+        una transcripción: el Asset queda marcado ``provider='text-derived'`` para que sea
+        auditable y nunca se confunda con ASR real. Así los subtítulos SIEMPRE llegan al
+        timeline y se queman en el MP4, también en modo local/gratuito sin ASR.
+
+        Devuelve ``None`` solo si no hay voz ni texto del que derivar subtítulos.
         """
         voice_assets = [a for a in project.assets if a.kind == "voice"]
         if not voice_assets:
             return None
 
-        asr = registry.resolve("asr", project.provider_overrides)
+        all_words, asr_ok = self._asr_word_timings(project, voice_assets)
 
-        all_words: list = []
-        offset = 0.0
-        try:
-            for asset in sorted(voice_assets, key=lambda a: a.id):
-                timings = asr.transcribe(asset.path)
-                from app.providers.base import WordTiming
+        if asr_ok:
+            if corrections:
+                all_words = apply_corrections(all_words, corrections)
+            all_cues = cues_from_word_timings(
+                all_words, max_words_per_cue=max_words_per_cue
+            )
+            provider = "faster_whisper"
+            source = "asr"
+        else:
+            # Sin ASR: derivar del texto de narración por escena (determinista).
+            all_cues = self._text_cues(project, voice_assets, max_words_per_cue)
+            all_words = []
+            provider = "text-derived"
+            source = "text"
 
-                for w in timings:
-                    all_words.append(
-                        WordTiming(
-                            word=w.word,
-                            start_s=w.start_s + offset,
-                            end_s=w.end_s + offset,
-                        )
-                    )
-                offset += float((asset.meta or {}).get("duration_s", 0.0))
-        except Exception as exc:  # faster-whisper/modelo no disponible: no inventar
-            from app.providers.asr.faster_whisper import AsrNotAvailable
-
-            if isinstance(exc, AsrNotAvailable):
-                return None
-            raise
-
-        if corrections:
-            all_words = apply_corrections(all_words, corrections)
-
-        all_cues = cues_from_word_timings(all_words, max_words_per_cue=max_words_per_cue)
         if not all_cues:
             return None
 
@@ -212,10 +210,81 @@ class VoiceEngine:
             scene_id=None,
             kind="srt",
             path=str(srt_path),
-            provider="faster_whisper",
-            meta={"cues": len(all_cues), "words_json": str(words_path)},
+            provider=provider,
+            meta={
+                "cues": len(all_cues),
+                "words_json": str(words_path),
+                "source": source,
+            },
         )
         session.add(asset)
         session.commit()
         session.refresh(asset)
         return asset
+
+    def _asr_word_timings(self, project: Project, voice_assets: list[Asset]):
+        """Transcribe las voces con el ASR activo. Devuelve ``(words, asr_ok)``.
+
+        ``asr_ok=False`` cuando faster-whisper/su modelo no están disponibles, para que la
+        capa superior use el fallback por texto en vez de inventar tiempos.
+        """
+        from app.providers.asr.faster_whisper import AsrNotAvailable
+        from app.providers.base import WordTiming
+
+        asr = registry.resolve("asr", project.provider_overrides)
+        all_words: list[WordTiming] = []
+        offset = 0.0
+        try:
+            for asset in sorted(voice_assets, key=lambda a: a.id):
+                timings = asr.transcribe(asset.path)
+                for w in timings:
+                    all_words.append(
+                        WordTiming(
+                            word=w.word,
+                            start_s=w.start_s + offset,
+                            end_s=w.end_s + offset,
+                        )
+                    )
+                offset += float((asset.meta or {}).get("duration_s", 0.0))
+        except AsrNotAvailable:
+            return [], False
+        return all_words, True
+
+    def _text_cues(
+        self, project: Project, voice_assets: list[Asset], max_words_per_cue: int
+    ) -> list[Cue]:
+        """Deriva cues del texto de narración de cada escena (fallback sin ASR).
+
+        Usa la duración real de la voz de la escena (``Asset(kind='voice').meta
+        ['duration_s']``) y su offset acumulado para que los cues queden en coordenadas
+        globales del proyecto (como el ``.srt`` del ASR), de modo que ``TimelineBuilder``
+        los reparta por escena igual que con el ASR real.
+        """
+        voice_by_scene: dict[int, Asset] = {}
+        for asset in sorted(voice_assets, key=lambda a: a.id):
+            if asset.scene_id is not None:
+                voice_by_scene[asset.scene_id] = asset
+
+        scenes = sorted(project.scenes, key=lambda s: (s.order, s.id))
+        cues: list[Cue] = []
+        offset = 0.0
+        for scene in scenes:
+            voice_asset = voice_by_scene.get(scene.id)
+            if voice_asset is None:
+                # Sin voz en la escena: no hay audio con el que sincronizar el texto.
+                continue
+            duration = float((voice_asset.meta or {}).get("duration_s", 0.0))
+            if duration <= 0:
+                continue
+            text = (scene.narration_text or "").strip()
+            if text:
+                cues.extend(
+                    cues_from_text(
+                        text,
+                        start_s=offset,
+                        duration_s=duration,
+                        max_words_per_cue=max_words_per_cue,
+                    )
+                )
+            offset += duration
+        return cues
