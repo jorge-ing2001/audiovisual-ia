@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Andamiaje del monorepo y baseline verde. Crear la estructura backend (FastAPI) + frontend (Next.js/TS/Tailwind) + proyecto Remotion, manifiestos de dependencias, .env.example y configuracion Pydantic Settings, de modo que build/test/arranque basico funcionen. No implementa logica de negocio.",
+  "status": "pending",
+  "steps": [
+    "Crear backend/pyproject.toml (Python 3.11) con fastapi, uvicorn, pydantic, pydantic-settings, sqlalchemy, pillow, httpx, pytest. Crear backend/app/main.py con la app FastAPI y un endpoint GET /health que devuelve {status:'ok'}.",
+    "Crear backend/app/config.py con Pydantic Settings que lee las variables AIV_* definidas en docs/LOCAL-FREE-STACK.md (backends por capacidad, rutas de binarios, DB url, media root, claves opcionales). Defaults: llm=ollama, image=stock, tts=kokoro, asr=faster_whisper.",
+    "Crear el esqueleto de paquetes backend/app/{api,models,engines,providers,jobs,storage}/__init__.py y engines/{script,visual2d,animation2d,engine3d,voice,render}/ vacios con docstring de responsabilidad.",
+    "Crear frontend/ con Next.js + TypeScript + Tailwind (app router): pagina inicial que hace fetch a /health del backend y muestra el estado. package.json con scripts dev/build/lint.",
+    "Crear remotion/ con un proyecto Remotion minimo (@remotion/cli) y una composicion vacia de ejemplo que acepte props de timeline (sin logica aun).",
+    "Crear .env.example en la raiz con todas las variables de LOCAL-FREE-STACK.md. Crear .gitignore (node_modules, .venv, __pycache__, media/, *.db, .env).",
+    "Anadir un test trivial backend/tests/test_health.py que use TestClient y verifique GET /health == 200."
+  ],
+  "acceptance_criteria": [
+    "cd backend && pytest pasa (incluido test_health).",
+    "uvicorn levanta y GET /health devuelve 200 {status:'ok'}.",
+    "cd frontend && npm install && npm run build completan sin error; npm run lint pasa.",
+    "remotion/ instala dependencias sin error.",
+    ".env.example documenta todas las variables AIV_* y las claves opcionales de pago."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q",
+    "cd backend && (uvicorn app.main:app --port 8099 &) && sleep 3 && curl -sf http://localhost:8099/health && kill %1",
+    "cd frontend && npm run build && npm run lint"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

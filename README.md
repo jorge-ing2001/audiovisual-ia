@@ -4,7 +4,7 @@ Plataforma de producción audiovisual con inteligencia artificial (2D y 3D) basa
 
 El usuario describe una idea en lenguaje natural y la plataforma la transforma en un video 2D completo: guion, escenas, storyboard, imágenes, voz (TTS), música y efectos, subtítulos sincronizados, línea de tiempo y renderizado final en MP4.
 
-> Estado actual: **planificación de la Fase 1 (MVP 2D)**. Este repositorio contiene, por ahora, la documentación de arquitectura, el plan por fases y el desglose de tareas. La implementación se hace tarea por tarea a partir de `.agents/tasks/`.
+> Estado actual: **Fase 1 (MVP 2D) — andamiaje (FEAT-001)**. El monorepo ya tiene su esqueleto con baseline verde (build/lint/test): backend FastAPI (`/health`), frontend Next.js que consulta ese estado, y proyecto Remotion mínimo. La lógica de negocio (datos, API, motores IA/imagen/voz, timeline, render, editor) se implementa tarea por tarea en FEAT-002..007 a partir de `.agents/tasks/`.
 
 ## Principios
 
@@ -20,17 +20,55 @@ El usuario describe una idea en lenguaje natural y la plataforma la transforma e
 | Frontend | Next.js + TypeScript + Tailwind CSS |
 | Backend | Python + FastAPI (REST) |
 | Audiovisual | Remotion (composición/render) + FFmpeg (media/mezcla) |
-| LLM (por defecto) | Ollama local (p. ej. `llama3.2`) |
+| LLM (por defecto) | Ollama local (`llama3.1:8b`) |
 | Imágenes (por defecto) | Proveedor conmutable, backend local/stock gratuito (Pexels/Pixabay + placeholders generados) |
 | Voz/TTS (por defecto) | Kokoro (offline) o edge-tts, reutilizados de lemo-opuscar |
-| Subtítulos | faster-whisper (local) |
+| Subtítulos | faster-whisper (local); si no está disponible, fallback determinista derivado del texto de la narración por escena (etiquetado `text-derived`, nunca presentado como transcripción real) |
+
+## Estructura del monorepo
+
+```
+audiovisual-ia/
+  backend/     # API FastAPI (app/{api,models,engines,providers,jobs,storage}) + tests
+  frontend/    # Next.js (App Router) + TypeScript + Tailwind
+  remotion/    # proyecto Remotion (composiciones que leen el timeline JSON)
+  docs/        # arquitectura, plan por fases, stack local/gratuito
+  .env.example # variables de configuración (AIV_*)
+```
+
+## Arranque local
+
+Requisitos: Node 20+, Python 3.11, y un FFmpeg accesible (ruta configurable vía `AIV_FFMPEG_BIN`).
+
+```bash
+# 0) Configuración
+cp .env.example .env            # ajusta AIV_OLLAMA_MODEL, AIV_FFMPEG_BIN, claves opcionales…
+
+# 1) Backend (FastAPI)  ->  http://localhost:8000
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000    # GET /health -> {"status":"ok"}
+
+# 2) Frontend (Next.js)  ->  http://localhost:3000
+cd frontend && npm install && npm run dev
+
+# 3) Remotion (composición/render)
+cd remotion && npm install && npm run studio
+```
+
+El LLM por defecto es **Ollama** (`AIV_OLLAMA_MODEL=llama3.1:8b`); arráncalo aparte con `ollama serve`.
+No es necesario para el baseline de FEAT-001, pero sí a partir de FEAT-003.
 
 ## Documentación
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — arquitectura modular, capa de proveedores, modelo de datos, colas, config, cómo encajan las fases futuras.
 - [`docs/PHASE-1-MVP.md`](docs/PHASE-1-MVP.md) — alcance del MVP, pipeline extremo a extremo, desglose de tareas con criterios de aceptación y enfoque de pruebas.
 - [`docs/LOCAL-FREE-STACK.md`](docs/LOCAL-FREE-STACK.md) — modo local/gratuito, proveedores por defecto y opciones de pago pluggables, variables de entorno.
-- [`docs/REFERENCE-REPOS-LICENSES.md`](docs/REFERENCE-REPOS-LICENSES.md) — análisis y licencias de los repos de referencia.
+- [`docs/ENGINE-3D-ARCHITECTURE.md`](docs/ENGINE-3D-ARCHITECTURE.md) — arquitectura del motor 3D (Blender) de la Fase 3.
+- [`docs/ENGINE-3D-MVP-STYLIZED.md`](docs/ENGINE-3D-MVP-STYLIZED.md) — alcance del MVP-3D en estilo estilizado.
+- [`docs/ENGINE-3D-RUNBOOK.md`](docs/ENGINE-3D-RUNBOOK.md) — guía operativa para producir el MP4 vertical 9:16 del MVP-3D en tu PC.
+- [`docs/REFERENCE-REPOS-LICENSES.md`](docs/REFERENCE-REPOS-LICENSES.md) — análisis y licencias de los repos de referencia (incluye assets 3D Mixamo/CC0 y Blender GPL).
 - [`docs/RISKS-ASSUMPTIONS.md`](docs/RISKS-ASSUMPTIONS.md) — riesgos y supuestos (Remotion comercial, cómputo local, sandbox, APIs de stock).
 
 ## Repos de referencia

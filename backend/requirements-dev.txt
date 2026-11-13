@@ -1,0 +1,4 @@
+# Dependencias de desarrollo/test del backend.
+-r requirements.txt
+pytest>=8.2
+ruff>=0.5

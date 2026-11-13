@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Nucleo del backend: modelo de datos, API REST, cola de jobs respaldada por BD con worker, y la capa de proveedores (interfaces + registry + seleccion por env var con defaults locales). Es la base que consumen los motores en features posteriores.",
+  "status": "pending",
+  "steps": [
+    "Definir modelos ORM SQLAlchemy en backend/app/models/: Project, Script, Scene, Asset, Timeline, Version, Job, segun el esquema de docs/ARCHITECTURE.md seccion 5. Esquemas Pydantic para request/response.",
+    "Configurar storage: backend/app/storage/db.py (engine/sesion SQLite via AIV_DATABASE_URL) y workspace de media por proyecto bajo AIV_MEDIA_ROOT.",
+    "Routers REST en backend/app/api/: projects (CRUD), scenes (listar/editar), assets (listar/descargar), jobs (estado/polling). Montarlos en app.main.",
+    "Capa de proveedores en backend/app/providers/base.py: Protocols LLMProvider, ImageProvider, TTSProvider, ASRProvider y dataclasses de artefactos (ImageAsset, AudioAsset, VoiceLine, WordTiming), segun ARCHITECTURE.md seccion 3.",
+    "backend/app/providers/registry.py: mapa capacidad->{nombre:factoria} y resolucion del backend activo por env var (AIV_LLM_BACKEND, etc.), con hook de override por proyecto. Incluir un FakeLLM/FakeImage para tests.",
+    "Cola de jobs en backend/app/jobs/queue.py (interfaz JobQueue.enqueue/claim/complete/fail respaldada por la tabla Job) y jobs/worker.py (worker asyncio que ejecuta handlers registrados, con reintentos y backoff). Registrar un handler no-op de ejemplo.",
+    "Tests: CRUD de Project via TestClient; ciclo de vida de un job no-op (pending->running->succeeded); un job que lanza excepcion -> reintenta y acaba failed; registry devuelve el backend por defecto y cambia con la env var."
+  ],
+  "acceptance_criteria": [
+    "POST/GET/PATCH/DELETE de /projects funcionan via REST y persisten en SQLite.",
+    "Encolar un job no-op lo lleva a estado succeeded; un job que falla agota reintentos y queda failed con mensaje.",
+    "registry.resolve('llm') devuelve el backend indicado por AIV_LLM_BACKEND (default ollama) y acepta override por proyecto.",
+    "pytest del backend pasa, incluidos los nuevos tests."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

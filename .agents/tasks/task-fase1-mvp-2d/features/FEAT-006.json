@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "Orquestacion end-to-end prompt->video. Un job de pipeline que encadena guion (FEAT-003), imagenes (FEAT-003), voz/musica/SFX y subtitulos (FEAT-004) y timeline+render+mux (FEAT-005), con estados, progreso y reintentos por escena, expuesto por la API. Produce el MP4 final en modo local/gratuito.",
+  "status": "completed",
+  "steps": [
+    "jobs/pipeline.py: handler de job 'generate_video' que ejecuta los pasos del pipeline de docs/PHASE-1-MVP.md, generando imagen y voz por escena como sub-pasos reanudables y actualizando progreso en la tabla Job.",
+    "Reutilizacion y reintentos: cada paso comprueba la cache de Assets antes de regenerar; los fallos por escena reintentan con backoff sin reiniciar todo el pipeline.",
+    "Endpoint POST /projects/{id}/generate que encola el job de pipeline y devuelve el job id; el estado se consulta con GET /jobs/{id} (progreso por paso).",
+    "Manejo de dependencias ausentes: si Ollama no esta disponible, el paso de guion falla con mensaje accionable; permitir inyectar un guion fixture ETIQUETADO como tal (no presentado como salida real) para poder verificar los pasos posteriores end-to-end.",
+    "Test end-to-end: con image=placeholder y tts=kokoro-o-edge (y guion fixture si no hay Ollama), POST /generate produce finalmente un Asset(kind='video') MP4; el job pasa por los estados hasta succeeded; ffprobe verifica el MP4. Se salta con razon si falta el toolchain de render."
+  ],
+  "acceptance_criteria": [
+    "POST /projects/{id}/generate encola el pipeline y GET /jobs/{id} muestra progreso por paso hasta succeeded.",
+    "En modo local/gratuito (placeholder + edge/kokoro) el pipeline produce un MP4 final reproducible.",
+    "Un fallo en una escena reintenta sin perder el trabajo ya hecho de otras escenas (cache de assets).",
+    "pytest del backend pasa, incluido el test end-to-end (saltado con razon si falta render toolchain)."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementado jobs/pipeline.py (handler 'generate_video') que encadena guion->imagen/voz por escena->musica/SFX->subtitulos->timeline->render+mux. Registrado en app/jobs/handlers.py. Endpoint POST /projects/{id}/generate (schemas GenerateVideoRequest/Response) encola el job; estado/progreso por paso via GET /jobs/{id} (progress 0..1 + result.steps/result.current). Sub-pasos imagen/voz reanudables e idempotentes (saltan si ya existe asset valido en disco) con reintentos por escena y backoff (_with_retries). Guion fixture: options.script_fixture (o body.script_fixture en el POST), validado con ScriptDraft y ETIQUETADO source=fixture (prefijo en Script.structure + raw_text JSON {source:fixture}); nunca se presenta como salida de IA. Sin Ollama alcanzable y sin fixture, ScriptSourceError con mensaje accionable (menciona AIV_OLLAMA_URL y la alternativa fixture). VERIFICACION: con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN = /projects/sandbox/.localbin, pytest = 63 passed / 2 skipped (los 2 skips preexistentes: kokoro sin modelo, faster-whisper no instalado). El test e2e test_generate_endpoint_runs_pipeline_to_mp4 PRODUJO un MP4 real (Remotion+Chromium funciona en el sandbox) verificado con ffprobe (streams video+audio). Sin ffmpeg en PATH el e2e se salta con razon (49 passed/16 skipped). Voz del e2e sembrada como WAV de test (ffmpeg/soundfile) claramente etiquetado porque kokoro necesita modelo offline y edge-tts necesita red; el pipeline la reutiliza por idempotencia (el camino real de TTS lo cubre FEAT-004). No se anadieron dependencias nuevas (requirements.txt sin cambios). Ninguna API key en el repo. Queda FEAT-007: frontend + editor."
+}

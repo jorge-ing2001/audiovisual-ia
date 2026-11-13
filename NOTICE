@@ -1,0 +1,92 @@
+audiovisual-ia
+Copyright (c) 2024 audiovisual-ia contributors
+
+This product includes software from third-party projects. Their licenses and
+terms are summarized in docs/REFERENCE-REPOS-LICENSES.md.
+
+-------------------------------------------------------------------------------
+lemo-opuscar (MIT License) — https://github.com/lemomo-ai/lemo-opuscar
+-------------------------------------------------------------------------------
+
+The Voice/Audio engine (motor 5) and the subtitle export of audiovisual-ia reuse
+MIT-licensed code from the lemo-opuscar project ("core/" tree). Only the MIT code
+is reused; lemo-opuscar's documentation (CC BY-NC 4.0), its demo films (CC BY 4.0),
+the excluded demo narrations, the "Clawd" character and third-party marks/assets
+are NOT reused.
+
+Reused components (adapted behind audiovisual-ia's provider interfaces):
+
+  - core/tts/tts.py       Kokoro offline TTS  -> app/providers/tts/kokoro.py
+  - core/tts/tts_zh.py    edge-tts (online)   -> app/providers/tts/edge.py
+  - core/tts/asr_check.py faster-whisper ASR  -> app/providers/asr/faster_whisper.py
+  - core/render/srt.py    SRT export format   -> app/engines/voice/subtitles.py
+  - core/render/mux.sh    FFmpeg loudnorm/mix -> app/engines/voice/mixer.py (-14 LUFS)
+
+The kokoro.py and edge.py providers invoke the original lemo-opuscar scripts via
+subprocess (located by AIV_LEMO_OPUSCAR_PATH), so the upstream MIT code runs
+unmodified. The ASR, subtitle and mixer modules reimplement the same approach.
+
+-------------------------------------------------------------------------------
+JustCarlos30/skills-videos-cortos (MIT License)
+https://github.com/JustCarlos30/skills-videos-cortos
+-------------------------------------------------------------------------------
+
+The following modules of audiovisual-ia are ORIGINAL, independent reimplementations
+(not literal copies) INSPIRED BY the MIT-licensed audio/voice workflow of
+skills/voz-whisper/scripts/voz.py in JustCarlos30/skills-videos-cortos:
+
+  - app/engines/voice/master.py     Voice cleanup + mastering chain to -14 LUFS
+                                    (highpass / afftdn de-noise / de-esser / soft EQ /
+                                    acompressor, then 2-pass loudnorm + alimiter).
+  - app/engines/voice/trim.py       Silence trimming via ffmpeg silencedetect with
+                                    speech-segment building and cumulative WordTiming
+                                    re-mapping onto the trimmed timeline.
+  - app/engines/voice/subtitles.py  Word-by-word subtitle cues, a palabras.json
+                                    ([{text,startMs,endMs}]) export, and a corrections
+                                    dictionary ({"mal":"bien"}) that redistributes the
+                                    original token's time across replacement words.
+  - app/engines/voice/recorded.py   Optional recorded-voice backend (upload -> master ->
+                                    ASR -> subtitles), same Assets as the TTS path.
+
+No source code from skills-videos-cortos is copied; only the techniques are adapted to
+audiovisual-ia's own architecture (FFmpeg filter graphs and provider layer are our own).
+The projects/<slug> layout, video.json and the Audacity .aup3 parser of voz.py are NOT
+reused.
+
+-------------------------------------------------------------------------------
+3D assets (Mixamo / CC0) and Blender (GPL) — Phase 3 (MVP-3D)
+-------------------------------------------------------------------------------
+
+The 3D engine (motor 4) renders scenes with Blender and third-party 3D assets. These
+assets are NOT bundled or versioned in this repository: the user downloads them and places
+them under AIV_BLENDER_ASSETS_DIR (defaults to media/assets3d/). Each asset's origin and
+license is catalogued in media/assets3d/README.md. Summary:
+
+  - Character and animations: Mixamo (Adobe). Free to use with an Adobe account under
+    Mixamo's terms of use; do NOT redistribute the source asset files. They are not
+    committed to this repo for that reason.
+  - Sets and props: CC0 1.0 (public domain, e.g. Poly Haven, Kenney). No attribution
+    required; origin recorded anyway in media/assets3d/README.md.
+
+Blender itself is licensed under the GNU GPL. audiovisual-ia uses Blender only as an
+EXTERNAL rendering tool: it invokes the Blender executable (AIV_BLENDER_BIN) as a headless
+subprocess (blender -b -P script.py). No Blender source code is copied, linked, or
+redistributed with this project, so the GPL of Blender does not extend to audiovisual-ia's
+own code. See docs/REFERENCE-REPOS-LICENSES.md and docs/ENGINE-3D-RUNBOOK.md.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+Software, and to permit persons to whom the Software is furnished to do so,
+subject to the above copyright notice and this permission notice being included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

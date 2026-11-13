@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Motor IA/guion (motor 1) y motor Visual 2D (motor 2) con proveedores locales/gratuitos. El guion usa Ollama; las imagenes usan StockImageProvider (Pexels/Pixabay) con degradacion a PlaceholderProvider (Pillow). Cache de assets por hash para no regenerar.",
+  "status": "pending",
+  "steps": [
+    "providers: OllamaLLM (backend/app/providers/llm/ollama.py) que llama a AIV_OLLAMA_URL con AIV_OLLAMA_MODEL y soporta salida JSON estructurada. OpenAILLM como stub pluggable (solo si OPENAI_API_KEY).",
+    "Motor 1 en engines/script/: ScriptEngine.generate_script(prompt, options) que produce guion, lo divide en Scene (order, narration_text, visual_prompt, duration_s, camera_notes) y un storyboard, validando el JSON del LLM con Pydantic. Prompt de sistema que fija estructura/tono/duracion. Guardar Script/Scene en BD.",
+    "providers imagen: StockImageProvider (backend/app/providers/image/stock.py) que busca en Pexels/Pixabay con httpx usando AIV_PEXELS_API_KEY/AIV_PIXABAY_API_KEY; PlaceholderProvider (image/placeholder.py) que genera un PNG con Pillow (gradiente + texto de escena) al aspecto pedido. Degradacion: si stock no tiene clave/red, caer a placeholder.",
+    "Motor 2 en engines/visual2d/: VisualEngine.render_scene_image(scene, style) que usa el ImageProvider del registry, escribe el archivo en el workspace del proyecto y crea un Asset(kind='image') con provider y meta (incluida atribucion de stock).",
+    "Cache: antes de generar, calcular un hash de (visual_prompt, aspect, backend, seed) y reutilizar un Asset existente valido.",
+    "Endpoint: POST /projects/{id}/script que ejecuta el motor de guion y devuelve escenas; endpoint para (re)generar la imagen de una escena.",
+    "Tests: ScriptEngine con OllamaLLM mockeado valida el parseo de un JSON de guion a N escenas; PlaceholderProvider genera un PNG real no vacio; StockImageProvider con httpx mockeado mapea la respuesta a un ImageAsset y la degradacion a placeholder se activa sin clave; la cache evita una segunda llamada al proveedor."
+  ],
+  "acceptance_criteria": [
+    "POST /projects/{id}/script sobre un prompt devuelve >=1 Scene con narration_text, visual_prompt y duration_s persistidas.",
+    "Sin clave de stock ni red, cada escena obtiene una imagen placeholder real (PNG en disco) y un Asset en BD.",
+    "Regenerar una imagen con la misma entrada reutiliza el Asset cacheado (no llama de nuevo al proveedor).",
+    "pytest del backend pasa, incluidos los nuevos tests."
+  ],
+  "verification": [
+    "cd backend && python -m pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

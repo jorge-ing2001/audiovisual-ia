@@ -1,0 +1,29 @@
+# --- Python / backend ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Node / frontend / remotion ---
+node_modules/
+.next/
+out/
+remotion/out/
+remotion/build/
+*.tsbuildinfo
+
+# --- Entorno y datos locales ---
+.env
+*.db
+media/*
+# Excepcion: el catalogo de assets 3D (origen/licencia) SI se versiona; los binarios no.
+# Se re-incluyen solo las carpetas necesarias y, dentro, solo el README.
+!media/assets3d/
+media/assets3d/*
+!media/assets3d/README.md
+
+# --- SO / editores ---
+.DS_Store
