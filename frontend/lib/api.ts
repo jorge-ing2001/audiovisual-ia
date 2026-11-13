@@ -5,6 +5,14 @@
 // (sin datos simulados). Las formas de request/response replican los esquemas
 // Pydantic de backend/app/models/schemas.py.
 
+import type {
+  EditExportResponse,
+  EditHistoryEntry,
+  EditOperationRequest,
+  EditProject,
+  EditProjectRead,
+} from "@/lib/editor/types";
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -349,4 +357,78 @@ export function latestRender(projectId: number): Promise<Job> {
 /** URL de descarga directa del MP4 final del proyecto. */
 export function videoDownloadUrl(projectId: number): string {
   return `${API_BASE_URL}/projects/${projectId}/video`;
+}
+
+// --------------------------------------------------------------------------- //
+// Editor multipista (/projects/{id}/editor) — espejo de app/api/editor.py
+// --------------------------------------------------------------------------- //
+
+/**
+ * Abre el editor: devuelve el EditProject activo o lo deriva del último Timeline.
+ * Idempotente (POST .../editor/open). Es el primer paso del EditorWorkspace.
+ */
+export function openEditor(projectId: number): Promise<EditProjectRead> {
+  return request<EditProjectRead>(`/projects/${projectId}/editor/open`, {
+    method: "POST",
+  });
+}
+
+/** Estado completo del EditProject activo (GET .../editor). 404 si no se abrió. */
+export function getEditProject(projectId: number): Promise<EditProjectRead> {
+  return request<EditProjectRead>(`/projects/${projectId}/editor`);
+}
+
+/** Reemplaza el EditProject completo (PUT .../editor) y crea una Version (undo/redo). */
+export function putEditProject(
+  projectId: number,
+  project: EditProject,
+): Promise<EditProjectRead> {
+  return request<EditProjectRead>(`/projects/${projectId}/editor`, {
+    method: "PUT",
+    body: JSON.stringify({ edit_project: project }),
+  });
+}
+
+/** Aplica UNA operación pura sobre el EditProject activo (POST .../editor/op). */
+export function applyEditOp(
+  projectId: number,
+  op: string,
+  params: Record<string, unknown> = {},
+): Promise<EditProjectRead> {
+  const body: EditOperationRequest = { op, params };
+  return request<EditProjectRead>(`/projects/${projectId}/editor/op`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Deshace la última edición (POST .../editor/undo). 409 si no hay nada que deshacer. */
+export function undoEdit(projectId: number): Promise<EditProjectRead> {
+  return request<EditProjectRead>(`/projects/${projectId}/editor/undo`, {
+    method: "POST",
+  });
+}
+
+/** Rehace la edición deshecha (POST .../editor/redo). 409 si no hay nada que rehacer. */
+export function redoEdit(projectId: number): Promise<EditProjectRead> {
+  return request<EditProjectRead>(`/projects/${projectId}/editor/redo`, {
+    method: "POST",
+  });
+}
+
+/** Lista las versiones del historial de edición (GET .../editor/history). */
+export function getEditHistory(projectId: number): Promise<EditHistoryEntry[]> {
+  return request<EditHistoryEntry[]>(`/projects/${projectId}/editor/history`);
+}
+
+/** Encola el job edit_export que re-renderiza desde el EditProject (POST .../editor/export). */
+export function enqueueEditExport(projectId: number): Promise<EditExportResponse> {
+  return request<EditExportResponse>(`/projects/${projectId}/editor/export`, {
+    method: "POST",
+  });
+}
+
+/** Estado del último export de edición del proyecto (GET .../editor/export, para polling). */
+export function latestEditExport(projectId: number): Promise<Job> {
+  return request<Job>(`/projects/${projectId}/editor/export`);
 }

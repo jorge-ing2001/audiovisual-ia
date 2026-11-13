@@ -20,7 +20,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from app.engines.editor.model import AUDIO_KINDS, VISUAL_KINDS, EditClip, EditProject
+from app.engines.editor.model import (
+    AUDIO_KINDS,
+    VISUAL_KINDS,
+    EditClip,
+    EditProject,
+    EditTrack,
+)
 from app.engines.voice.mixer import MixTrack
 
 __all__ = ["compile_remotion_props", "compile_audio_tracks"]
@@ -104,21 +110,50 @@ def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
     }
 
 
+def _audio_clip_props(clip: EditClip, track: EditTrack, fps: int, resolve_src) -> dict:
+    """Props de un clip de audio para el PREVIEW del Player (composición ``Edit``).
+
+    El ``volume`` es el gain efectivo (pista × clip), igual que el que el ``AudioMixer``
+    usa en export; así "lo que suena en el preview = lo que se exporta" (salvo la
+    masterización final a -14 LUFS, que es una mejora, no una divergencia de contenido).
+    """
+    return {
+        "id": clip.id,
+        "kind": clip.kind,
+        "from": _frame_at(clip.start_s, fps),
+        "durationInFrames": _frames_len(clip.duration_s, fps),
+        "startS": round(clip.start_s, 3),
+        "durationS": round(clip.duration_s, 3),
+        "src": resolve_src(clip.asset_id),
+        "assetId": clip.asset_id,
+        "volume": round(track.volume * clip.gain, 6),
+    }
+
+
 def compile_remotion_props(
     edit_project: EditProject,
     resolve_asset_src: Callable[[int | None], str | None] | None = None,
+    *,
+    muted: bool = False,
 ) -> dict:
     """Compila el ``EditProject`` a ``inputProps`` de la composición ``Edit``.
 
     ``resolve_asset_src`` traduce un ``asset_id`` a la ``src`` que la composición usará
     (ruta relativa al ``publicDir`` para headless, o URL para el Player). Si no se pasa,
     se emite ``None`` (útil en tests de forma).
+
+    ``muted`` controla el audio de la composición: ``False`` para el preview del Player
+    (el navegador reproduce ``<Audio>`` por clip) y ``True`` para el render headless de
+    export (el audio lo compone el ``AudioMixer``, evitando doble audio). Las pistas de
+    audio se emiten en ``audioClips`` en ambos casos (la composición las ignora si
+    ``muted`` es ``True``), de modo que el documento es el mismo en preview y export.
     """
     resolve = resolve_asset_src or (lambda _asset_id: None)
     fps = edit_project.meta.fps
 
     visual_clips: list[dict] = []
     subtitle_clips: list[dict] = []
+    audio_clips: list[dict] = []
     for track in sorted(edit_project.tracks, key=lambda t: t.order):
         for clip in track.clips:
             if not clip.enabled:
@@ -130,10 +165,13 @@ def compile_remotion_props(
                 visual_clips.append(props)
             elif clip.kind == "subtitle":
                 subtitle_clips.append(_subtitle_clip_props(clip, fps))
+            elif clip.kind in AUDIO_KINDS and not track.muted:
+                audio_clips.append(_audio_clip_props(clip, track, fps, resolve))
 
     # Orden estable por posición temporal (y luego por z/orden de pista para visuales).
     visual_clips.sort(key=lambda c: (c["from"], c["trackOrder"]))
     subtitle_clips.sort(key=lambda c: c["from"])
+    audio_clips.sort(key=lambda c: c["from"])
 
     total_frames = _frames_len(edit_project.duration_s, fps) if edit_project.duration_s > 0 else 1
 
@@ -144,6 +182,8 @@ def compile_remotion_props(
         "durationInFrames": total_frames,
         "visualClips": visual_clips,
         "subtitleClips": subtitle_clips,
+        "audioClips": audio_clips,
+        "muted": muted,
     }
 
 

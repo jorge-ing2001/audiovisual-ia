@@ -198,7 +198,9 @@ class RenderEngine:
                 return None
             return str(Path(path).resolve())
 
-        props = compile_remotion_props(edit_project, _asset_src)
+        # Export headless: vídeo MUDO (muted=True). El audio final lo compone el
+        # AudioMixer a -14 LUFS (evita doble audio con los <Audio> del preview).
+        props = compile_remotion_props(edit_project, _asset_src, muted=True)
 
         workspace = ensure_project_workspace(project.id) / "video"
         edit_timeline_path = (

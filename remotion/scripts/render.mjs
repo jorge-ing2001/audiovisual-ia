@@ -49,6 +49,16 @@ const run = async () => {
   const compositionId = args.composition ?? "Timeline";
 
   const inputProps = JSON.parse(fs.readFileSync(timelinePath, "utf-8"));
+
+  // Render HEADLESS = export: el vídeo va MUDO. Para la composición "Edit" forzamos
+  // `muted=true` en los inputProps, de modo que los <Audio> por clip del preview NO
+  // suenen en el render (el audio final lo compone el AudioMixer a −14 LUFS en el
+  // backend y se muxea con FFmpeg). Así se evita el doble audio. La composición
+  // "Timeline" no tiene audio, así que el flag es inocuo para ella.
+  if (compositionId === "Edit") {
+    inputProps.muted = true;
+  }
+
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
 
   // publicDir: raíz desde la que `staticFile(...)` resuelve las imágenes locales de las
