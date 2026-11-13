@@ -75,6 +75,24 @@ class Settings(BaseSettings):
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
 
+    # --- Motor 3D / Blender (Fase 3) ---
+    # Proveedor de la capacidad "clip" (clip de vídeo por escena); futuro: veo | runway | kling.
+    clip_backend: str = "blender"
+    # Ruta/nombre del binario de Blender 4.x (configurable, como AIV_FFMPEG_BIN;
+    # en el PC del usuario se apunta a Blender 4.x; en el sandbox no está disponible).
+    blender_bin: str = "blender"
+    # Motor de render de Blender: eevee (rápido, MVP) | cycles (lento, opcional).
+    render_engine_3d: str = "eevee"
+    # Carpeta de assets 3D (personajes/sets/animaciones). Vacío = media/assets3d.
+    blender_assets_dir: str = ""
+    # Muestras de render (EEVEE/Cycles); sube calidad a costa de tiempo.
+    blender_samples: int = 32
+    # Timeout del subproceso de Blender por escena (el tiempo de render no es restricción).
+    blender_timeout_s: int = 3600
+    # Default global de Project.production_type para proyectos nuevos: 2d | 3d
+    # (override por proyecto en BD).
+    production_type: str = "2d"
+
     # --- Reutilización de lemo-opuscar (voz/ASR/mux, código MIT) ---
     lemo_opuscar_path: str = ""
 
