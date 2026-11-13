@@ -104,9 +104,15 @@ def run_tts_script(
     lines_file = out / "lines.json"
     lines_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    cmd = [sys.executable, str(script), str(lines_file), str(out)]
-    if extra_args:
-        cmd.extend(extra_args)
+        # Utilizar siempre el entorno virtual propio de Lemo-OpusCar.
+    python_exe = lemo_path() / ".venv" / "Scripts" / "python.exe"
+
+    if not python_exe.is_file():
+        raise LemoNotAvailable(
+            f"No se encontró el Python del entorno virtual de Lemo: {python_exe}"
+        )
+
+    cmd = [str(python_exe), str(script), str(lines_file), str(out)]
 
     import os
 
@@ -116,12 +122,13 @@ def run_tts_script(
 
     try:
         proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=run_env,
-        )
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=run_env,
+        cwd=str(lemo_path()),
+)
     except FileNotFoundError as exc:  # intérprete no encontrado (no debería pasar)
         raise LemoNotAvailable(f"No se pudo ejecutar {relative_script}: {exc}") from exc
     except subprocess.TimeoutExpired as exc:

@@ -48,12 +48,16 @@ register_handler("noop", noop_handler)
 
 
 async def _run_handler(handler: Handler, payload: dict | None, job_id: int) -> Any:
-    """Ejecuta un handler soportando tanto funciones síncronas como corrutinas."""
-    result = handler(payload, job_id)
+    """Ejecuta handlers síncronos en un hilo y admite corrutinas."""
+    if inspect.iscoroutinefunction(handler):
+        return await handler(payload, job_id)
+
+    result = await asyncio.to_thread(handler, payload, job_id)
+
     if inspect.isawaitable(result):
         return await result
-    return result
 
+    return result
 
 def _job_type_and_payload(job_id: int) -> tuple[str, dict | None]:
     with session_scope() as session:
