@@ -29,6 +29,7 @@ const parseArgs = (argv) => {
     else if (token === "--out") args.out = argv[++i];
     else if (token === "--codec") args.codec = argv[++i];
     else if (token === "--public-dir") args.publicDir = argv[++i];
+    else if (token === "--composition") args.composition = argv[++i];
   }
   return args;
 };
@@ -44,6 +45,8 @@ const run = async () => {
   const timelinePath = path.resolve(args.timeline);
   const outPath = path.resolve(args.out);
   const codec = args.codec ?? "h264";
+  // Composición a renderizar: "Timeline" (generación) por defecto; el editor pasa "Edit".
+  const compositionId = args.composition ?? "Timeline";
 
   const inputProps = JSON.parse(fs.readFileSync(timelinePath, "utf-8"));
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -59,7 +62,7 @@ const run = async () => {
 
   const composition = await selectComposition({
     serveUrl,
-    id: "Timeline",
+    id: compositionId,
     inputProps,
   });
 

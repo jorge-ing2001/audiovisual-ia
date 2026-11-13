@@ -50,6 +50,51 @@ def render_handler(payload: dict | None, job_id: int) -> dict:
         }
 
 
+def edit_export_handler(payload: dict | None, job_id: int) -> dict:
+    """Re-renderiza el MP4 DESDE el ``EditProject`` activo del proyecto (editor).
+
+    ``payload`` debe traer ``project_id``. Carga el ``EditProject`` activo (persistido en
+    la tabla ``Timeline`` reutilizada) y llama a ``RenderEngine.compose_edit``, que
+    re-renderiza desde el estado editado (no desde el prompt) reutilizando Remotion +
+    ``AudioMixer`` + mux. ``RenderUnavailable`` se propaga tal cual (no se simula un MP4):
+    indica que la composición ``Edit`` no está disponible aquí (p. ej. sin Chromium o
+    antes de FEAT-003).
+    """
+    from app.engines.editor.store import load_active_edit_project
+
+    project_id = (payload or {}).get("project_id")
+    if project_id is None:
+        raise ValueError("El job edit_export requiere 'project_id' en el payload.")
+
+    with session_scope() as session:
+        project = session.get(Project, int(project_id))
+        if project is None:
+            raise ValueError(f"Proyecto {project_id} no encontrado para el export de edición.")
+
+        edit_project = load_active_edit_project(project, session)
+        if edit_project is None:
+            raise ValueError(
+                f"El proyecto {project_id} no tiene un EditProject; abre el editor "
+                "(POST /projects/{id}/editor/open) antes de exportar."
+            )
+
+        try:
+            result = RenderEngine().compose_edit(project, edit_project, session)
+        except RenderUnavailable as exc:
+            raise RenderUnavailable(str(exc)) from exc
+
+        return {
+            "project_id": int(project_id),
+            "asset_id": result.asset_id,
+            "video_path": result.video_path,
+            "timeline_path": result.timeline_path,
+            "duration_s": result.meta.get("duration_s"),
+            "source": "edit_export",
+        }
+
+
 register_handler("render", render_handler)
 # Pipeline end-to-end prompt->video (FEAT-006).
 register_handler("generate_video", generate_video_handler)
+# Export del editor multipista: re-render desde el EditProject (editor, FEAT-002).
+register_handler("edit_export", edit_export_handler)
