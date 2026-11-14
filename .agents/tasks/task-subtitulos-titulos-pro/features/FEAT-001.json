@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "chore",
   "description": "Configuracion de entorno y baseline verde para el Bloque 2. Confirmar que la suite existente pasa (baseline en main: 223 passed / 2 skipped con ffmpeg) y que frontend/remotion compilan (build/lint/typecheck) ANTES de ampliar nada. No implementa funciones del Bloque 2; deja el entorno listo y el baseline documentado. Primer feature obligatorio (proyecto existente).",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Si no existe backend/.venv, crearlo: cd backend && python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pip install -e '.[voice]'. (En este sandbox suele existir ya con las deps.)",
     "Ejecutar la suite backend con ffmpeg: cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q. Registrar el conteo exacto (esperado alrededor de 223 passed / 2 skipped).",
@@ -22,5 +22,5 @@
     "cd remotion && npm run typecheck"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Baseline verde confirmado en la rama feat/subtitulos-titulos-pro. backend/.venv ya existia con [dev]+[voice]. Versiones: Python 3.11.15, Node v22.23.4, FFmpeg 7.0.2-static en /projects/sandbox/.localbin (pasado via AIV_FFMPEG_BIN/AIV_FFPROBE_BIN). pytest backend: 223 passed, 2 skipped, 2 warnings (en ~39s). frontend: npm run build OK (rutas / , /projects/[id], /projects/[id]/editor), npm run lint sin errores, npm run typecheck (tsc --noEmit) OK. remotion: npm run typecheck (tsc --noEmit) OK. node_modules ya presentes en frontend/ y remotion/. Este es el baseline de referencia para detectar regresiones en FEAT-002.."
 }
