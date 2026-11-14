@@ -24,8 +24,11 @@ import {
 import type {
   EditAudioClipInput,
   EditInputProps,
+  EditOverlayClipInput,
   EditSubtitleClipInput,
   EditSubtitleStyleInput,
+  EditTitleClipInput,
+  EditTitleStyleInput,
   EditTransformInput,
   EditTransitionInput,
   EditVisualClipInput,
@@ -268,6 +271,202 @@ const VisualClip: React.FC<{ clip: EditVisualClipInput }> = ({ clip }) => {
   );
 };
 
+// --------------------------------------------------------------------------- //
+// Clip de título (texto animado: intro / lower-third / créditos)
+// --------------------------------------------------------------------------- //
+
+const DEFAULT_TITLE_STYLE: EditTitleStyleInput = {
+  fontFamily: "Inter, sans-serif",
+  fontSize: 96,
+  color: "#FFFFFF",
+  bold: true,
+  align: "center",
+  anchorX: 0.5,
+  anchorY: 0.5,
+  kind: "plain",
+  outlineColor: "#000000",
+  outlineWidth: 0,
+  shadow: false,
+  shadowColor: "#000000",
+  shadowBlur: 0,
+  shadowX: 0,
+  shadowY: 0,
+  bgOpacity: 1,
+  bgPadding: 0.2,
+  bgRadius: 8,
+};
+
+const TitleOverlay: React.FC<{ clip: EditTitleClipInput }> = ({ clip }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const style: EditTitleStyleInput = {
+    ...DEFAULT_TITLE_STYLE,
+    ...(clip.style ?? {}),
+  };
+  const anim = clip.animation ?? null;
+  const total = Math.max(1, clip.durationInFrames);
+  const animFrames = Math.max(
+    1,
+    anim ? anim.durationInFrames : Math.round(0.8 * fps),
+  );
+  const dir = anim?.direction ?? "both";
+  const type = anim?.type ?? "fade";
+
+  const inProg =
+    dir === "out"
+      ? 1
+      : interpolate(frame, [0, animFrames], [0, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
+  const outProg =
+    dir === "in"
+      ? 0
+      : interpolate(frame, [total - animFrames, total], [0, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
+
+  let opacity = 1;
+  let translateX = 0;
+  let translateY = 0;
+  let scale = 1;
+  let visibleText = clip.text;
+
+  if (type === "fade") {
+    opacity = Math.min(inProg, 1 - outProg);
+  } else if (type === "slide_up") {
+    opacity = Math.min(inProg, 1 - outProg);
+    translateY = (1 - inProg) * 40 + outProg * -40;
+  } else if (type === "slide_down") {
+    opacity = Math.min(inProg, 1 - outProg);
+    translateY = (1 - inProg) * -40 + outProg * 40;
+  } else if (type === "scale_in") {
+    opacity = Math.min(inProg, 1 - outProg);
+    scale = 0.7 + 0.3 * inProg;
+  } else if (type === "typewriter") {
+    const chars = Math.round(
+      interpolate(frame, [0, animFrames], [0, clip.text.length], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      }),
+    );
+    visibleText = clip.text.slice(0, chars);
+    opacity = 1 - outProg;
+  } else if (type === "none") {
+    opacity = 1;
+  }
+
+  const isCredits = type === "credits_roll";
+  const rollProgress = isCredits
+    ? interpolate(frame, [0, total], [1, -1], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      })
+    : 0;
+
+  const hasStroke = style.outlineWidth > 0;
+  const shadow = style.shadow
+    ? `${style.shadowX}px ${style.shadowY}px ${style.shadowBlur}px ${style.shadowColor}`
+    : "none";
+  const hasBg = style.bgOpacity > 0 && style.bgOpacity < 1;
+
+  const spanStyle: React.CSSProperties = {
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    lineHeight: 1.2,
+    fontWeight: style.bold ? 900 : 500,
+    color: style.color,
+    textAlign: style.align,
+    maxWidth: "80%",
+    whiteSpace: "pre-wrap",
+    textShadow: shadow,
+    ...(hasStroke
+      ? { WebkitTextStroke: `${style.outlineWidth}px ${style.outlineColor}` }
+      : {}),
+    ...(hasBg
+      ? {
+          backgroundColor: hexToRgba("#000000", style.bgOpacity),
+          padding: `${style.bgPadding}em 0.6em`,
+          borderRadius: style.bgRadius,
+        }
+      : {}),
+  };
+
+  const leftPct = `${(style.anchorX * 100).toFixed(3)}%`;
+  const topPct = isCredits
+    ? `${((rollProgress * 0.5 + 0.5) * 100).toFixed(3)}%`
+    : `${(style.anchorY * 100).toFixed(3)}%`;
+
+  return (
+    <AbsoluteFill style={{ opacity }}>
+      <div
+        style={{
+          position: "absolute",
+          left: leftPct,
+          top: topPct,
+          transform: `translate(-50%, -50%) translate(${translateX}px, ${translateY}px) scale(${scale})`,
+          transformOrigin: "center",
+          display: "flex",
+          justifyContent: "center",
+          width: "100%",
+        }}
+      >
+        <span style={spanStyle}>{visibleText}</span>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+// --------------------------------------------------------------------------- //
+// Clip de overlay (imagen / logo / marca de agua con mosaico)
+// --------------------------------------------------------------------------- //
+
+const OverlayClip: React.FC<{ clip: EditOverlayClipInput }> = ({ clip }) => {
+  const { width } = useVideoConfig();
+  if (!clip.src) return null;
+  const overlay = clip.overlay ?? {
+    opacity: 1,
+    anchorX: 0.5,
+    anchorY: 0.5,
+    widthFrac: 0.2,
+    rotation: 0,
+    tile: false,
+  };
+  const src = clip.src;
+  const imgWidth = Math.max(1, Math.round(overlay.widthFrac * width));
+
+  if (overlay.tile) {
+    return (
+      <AbsoluteFill
+        style={{
+          opacity: overlay.opacity,
+          backgroundImage: `url(${src})`,
+          backgroundRepeat: "repeat",
+          backgroundSize: `${imgWidth}px auto`,
+          transform: overlay.rotation ? `rotate(${overlay.rotation}deg)` : undefined,
+        }}
+      />
+    );
+  }
+
+  return (
+    <AbsoluteFill>
+      <div
+        style={{
+          position: "absolute",
+          left: `${(overlay.anchorX * 100).toFixed(3)}%`,
+          top: `${(overlay.anchorY * 100).toFixed(3)}%`,
+          transform: `translate(-50%, -50%) rotate(${overlay.rotation}deg)`,
+          opacity: overlay.opacity,
+        }}
+      >
+        <Img src={src} style={{ width: imgWidth, height: "auto", display: "block" }} />
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 const AudioClip: React.FC<{ clip: EditAudioClipInput }> = ({ clip }) => {
   if (!clip.src) return null;
   return <Audio src={clip.src} volume={Math.max(0, clip.volume)} />;
@@ -277,6 +476,8 @@ export const EditComposition: React.FC<EditInputProps> = ({
   visualClips,
   subtitleClips,
   audioClips,
+  titleClips,
+  overlayClips,
   muted,
   safeTop,
   safeBottom,
@@ -295,6 +496,30 @@ export const EditComposition: React.FC<EditInputProps> = ({
           layout="none"
         >
           <VisualClip clip={clip} />
+        </Sequence>
+      ))}
+
+      {(overlayClips ?? []).map((clip) => (
+        <Sequence
+          key={clip.id}
+          from={Math.max(0, Math.round(clip.from))}
+          durationInFrames={clamp1(clip.durationInFrames)}
+          name={`overlay:${clip.id}`}
+          layout="none"
+        >
+          <OverlayClip clip={clip} />
+        </Sequence>
+      ))}
+
+      {(titleClips ?? []).map((clip) => (
+        <Sequence
+          key={clip.id}
+          from={Math.max(0, Math.round(clip.from))}
+          durationInFrames={clamp1(clip.durationInFrames)}
+          name={`title:${clip.id}`}
+          layout="none"
+        >
+          <TitleOverlay clip={clip} />
         </Sequence>
       ))}
 

@@ -177,6 +177,79 @@ export type EditAudioClipProps = {
   volume: number;
 };
 
+// Estilo de un clip de título (texto animado). Espejo de TitleStyle (model.py):
+// tipografía + layout por anclaje (fracción del frame) + decoración fina heredada.
+export type EditTitleStyleProps = {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  align: "left" | "center" | "right";
+  anchorX: number;
+  anchorY: number;
+  kind: "intro" | "lower_third" | "credits" | "plain";
+  // Decoración fina (contorno/sombra/fondo) heredada de TextDecoration (siempre presente).
+  outlineColor: string;
+  outlineWidth: number;
+  shadow: boolean;
+  shadowColor: string;
+  shadowBlur: number;
+  shadowX: number;
+  shadowY: number;
+  bgOpacity: number;
+  bgPadding: number;
+  bgRadius: number;
+};
+
+// Animación de entrada/salida del título. Espejo de TitleAnimation (model.py).
+export type EditTitleAnimationProps = {
+  type:
+    | "none"
+    | "fade"
+    | "slide_up"
+    | "slide_down"
+    | "typewriter"
+    | "scale_in"
+    | "credits_roll";
+  durationInFrames: number;
+  durationS: number;
+  direction: "in" | "out" | "both";
+};
+
+export type EditTitleClipProps = {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  text: string;
+  style?: EditTitleStyleProps | null;
+  animation?: EditTitleAnimationProps | null;
+  trackOrder?: number;
+};
+
+// Estilo de un clip de overlay (imagen/logo/marca de agua). Espejo de OverlayStyle.
+export type EditOverlayStyleProps = {
+  opacity: number;
+  anchorX: number;
+  anchorY: number;
+  widthFrac: number;
+  rotation: number;
+  tile: boolean;
+};
+
+export type EditOverlayClipProps = {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  src?: string | null;
+  assetId?: number | null;
+  overlay?: EditOverlayStyleProps | null;
+  trackOrder?: number;
+};
+
 export type EditProps = {
   fps: number;
   width: number;
@@ -186,6 +259,10 @@ export type EditProps = {
   subtitleClips: EditSubtitleClipProps[];
   // Pistas de audio para el preview. Opcional: el export headless las silencia.
   audioClips?: EditAudioClipProps[];
+  // Títulos y overlays. Opcionales: solo llegan cuando hay clips, de modo que un
+  // EditProject sin títulos/overlays produce el MISMO inputProps que antes (regresión).
+  titleClips?: EditTitleClipProps[];
+  overlayClips?: EditOverlayClipProps[];
   // Silencia el audio del Player (true en el render de export para evitar doble
   // audio con el AudioMixer). En el preview del navegador va false.
   muted?: boolean;

@@ -28,11 +28,15 @@ __all__ = [
     "SubtitlePreset",
     "SubtitleStyle",
     "SubtitleWord",
+    "TitleAnimation",
+    "TitleStyle",
+    "OverlayStyle",
     "EditClip",
     "EditTrack",
     "EditMeta",
     "EditProject",
     "VISUAL_KINDS",
+    "VISUAL_RENDER_KINDS",
     "AUDIO_KINDS",
 ]
 
@@ -40,10 +44,14 @@ __all__ = [
 # ``Timeline`` reutilizada (campo ``json['kind']``).
 EDIT_PROJECT_KIND = "edit_project"
 
-TrackKind = Literal["video", "image", "voice", "music", "sfx", "subtitle"]
+TrackKind = Literal[
+    "video", "image", "voice", "music", "sfx", "subtitle", "title", "overlay"
+]
 
-#: Pistas cuyo clip pinta Remotion (composición ``Edit``).
+#: Pistas de medio visual (clips con ``asset_id`` que pinta Remotino como <Img>/<Video>).
 VISUAL_KINDS: tuple[TrackKind, ...] = ("video", "image")
+#: Pistas que pinta la composición ``Edit`` por encima del fondo (visuales + título + overlay).
+VISUAL_RENDER_KINDS: tuple[TrackKind, ...] = ("video", "image", "title", "overlay")
 #: Pistas que alimentan el ``AudioMixer`` (voice/music/sfx).
 AUDIO_KINDS: tuple[TrackKind, ...] = ("voice", "music", "sfx")
 
@@ -197,6 +205,91 @@ class SubtitleWord(BaseModel):
         return value
 
 
+class TitleAnimation(BaseModel):
+    """Animación de entrada/salida de un clip de título (intro/créditos/lower-third).
+
+    Defaults neutros y retrocompatibles: un clip de título sin animación explícita usa
+    ``fade`` ``both`` 0.8s. ``credits_roll`` desplaza el texto a lo largo de TODO el clip.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[
+        "none", "fade", "slide_up", "slide_down", "typewriter", "scale_in", "credits_roll"
+    ] = "fade"
+    duration_s: float = 0.8
+    direction: Literal["in", "out", "both"] = "both"
+
+    @field_validator("duration_s")
+    @classmethod
+    def _non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("title_animation.duration_s no puede ser negativa")
+        return value
+
+
+class TitleStyle(TextDecoration):
+    """Estilo de un clip de título (tipografía/posición/tipo + decoración fina heredada).
+
+    Reutiliza el mixin ``TextDecoration`` (contorno/sombra/fondo) de los subtítulos para no
+    duplicar validación. La posición es por anclaje en fracción del frame (0..1), pensada
+    para el drag&drop del preview. ``kind`` selecciona el layout (``lower_third`` se
+    preposiciona en la banda inferior).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    font_family: str = "Inter, sans-serif"
+    font_size: int = 96
+    color: str = "#FFFFFF"
+    bold: bool = True
+    align: Literal["left", "center", "right"] = "center"
+    anchor_x: float = 0.5
+    anchor_y: float = 0.5
+    kind: Literal["intro", "lower_third", "credits", "plain"] = "plain"
+
+    @field_validator("font_size")
+    @classmethod
+    def _font_size_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("title.font_size debe ser > 0")
+        return value
+
+    @field_validator("anchor_x", "anchor_y")
+    @classmethod
+    def _anchor_range(cls, value: float) -> float:
+        if not (0.0 <= value <= 1.0):
+            raise ValueError("title.anchor_x/anchor_y deben estar entre 0 y 1")
+        return value
+
+
+class OverlayStyle(BaseModel):
+    """Estilo de un clip de overlay (imagen/logo/marca de agua/emoji gráfico).
+
+    La imagen se dibuja a ``width_frac`` del ancho del frame (alto por aspecto del asset),
+    anclada en ``anchor_x/anchor_y`` (fracción del frame, para drag&drop), con ``opacity``
+    y ``rotation``. ``tile=True`` repite la imagen en mosaico (marca de agua).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    opacity: float = 1.0
+    anchor_x: float = 0.5
+    anchor_y: float = 0.5
+    width_frac: float = 0.2
+    rotation: float = 0.0
+    tile: bool = False
+
+    @field_validator("opacity", "anchor_x", "anchor_y", "width_frac")
+    @classmethod
+    def _frac_range(cls, value: float) -> float:
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(
+                "overlay.opacity/anchor_x/anchor_y/width_frac deben estar entre 0 y 1"
+            )
+        return value
+
+
 class EditClip(BaseModel):
     """Un clip posicionado en una pista del editor.
 
@@ -234,6 +327,13 @@ class EditClip(BaseModel):
     text: str | None = None
     style: SubtitleStyle | None = None
     words: list[SubtitleWord] = Field(default_factory=list)
+
+    # Title (texto animado: intro/lower-third/créditos). Reutiliza ``text`` como contenido.
+    title: TitleStyle | None = None
+    title_animation: TitleAnimation | None = None
+
+    # Overlay (imagen/logo/marca de agua). Reutiliza ``asset_id`` como imagen.
+    overlay: OverlayStyle | None = None
 
     @field_validator("start_s")
     @classmethod

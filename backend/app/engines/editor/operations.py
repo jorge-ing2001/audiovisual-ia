@@ -31,7 +31,11 @@ from app.engines.editor.model import (
     EditClip,
     EditMeta,
     EditProject,
+    EditTrack,
+    OverlayStyle,
     SubtitleStyle,
+    TitleAnimation,
+    TitleStyle,
     VisualTransform,
 )
 from app.engines.editor.presets import (
@@ -64,7 +68,16 @@ __all__ = [
     "op_apply_subtitle_preset_all",
     "op_set_format",
     "op_merge",
+    "op_add_track",
+    "op_add_title",
+    "op_set_title_style",
+    "op_set_title_animation",
+    "op_add_overlay",
+    "op_set_overlay_style",
 ]
+
+#: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
+_TRACK_KINDS = ("video", "image", "voice", "music", "sfx", "subtitle", "title", "overlay")
 
 # Presets de subtítulo admitidos (validación del campo ``preset``).
 _SUBTITLE_PRESETS = tuple(sorted(SUBTITLE_PRESETS))
@@ -760,6 +773,305 @@ def op_merge(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Pistas (crear pista de cualquier tipo, p. ej. título/overlay)
+# --------------------------------------------------------------------------- #
+
+
+def op_add_track(edit_project: EditProject, params: dict) -> EditProject:
+    """Crea una PISTA nueva de un ``kind`` dado (p. ej. ``title`` u ``overlay``).
+
+    Params: ``kind`` (uno de ``TrackKind``), ``name`` (str, opcional) y ``order`` (int,
+    opcional; por defecto al final). Devuelve el proyecto con la pista añadida. El ``id``
+    de la pista se deriva de forma determinista (``track_<kind>`` o con sufijo si colisiona)
+    para que el frontend pueda localizarla; se admite ``track_id`` explícito.
+    """
+    result = _clone(edit_project)
+    kind = _require_str(params, "kind")
+    if kind not in _TRACK_KINDS:
+        raise EditOperationError(
+            f"add_track: 'kind' debe ser uno de {', '.join(_TRACK_KINDS)}."
+        )
+    name = params.get("name")
+    if name is not None and not isinstance(name, str):
+        raise EditOperationError("add_track: 'name' debe ser str.")
+
+    order = params.get("order")
+    if order is None:
+        order = max((t.order for t in result.tracks), default=-1) + 1
+    elif isinstance(order, bool) or not isinstance(order, (int, float)):
+        raise EditOperationError("add_track: 'order' debe ser numérico.")
+    else:
+        order = int(order)
+
+    track_id = params.get("track_id")
+    if track_id is not None and not isinstance(track_id, str):
+        raise EditOperationError("add_track: 'track_id' debe ser str.")
+    if not track_id:
+        track_id = f"track_{kind}"
+        if result.track_by_id(track_id) is not None:
+            n = 2
+            while result.track_by_id(f"{track_id}_{n}") is not None:
+                n += 1
+            track_id = f"{track_id}_{n}"
+    elif result.track_by_id(track_id) is not None:
+        raise EditOperationError(f"add_track: la pista {track_id!r} ya existe.")
+
+    track = EditTrack(id=track_id, kind=kind, name=name or "", order=order)
+    result.tracks.append(track)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Títulos (texto animado: intro / lower-third / créditos)
+# --------------------------------------------------------------------------- #
+
+
+def op_add_title(edit_project: EditProject, params: dict) -> EditProject:
+    """Crea un clip de título en una pista ``title``.
+
+    Params: ``track_id`` (pista existente de kind ``title``), ``text`` (str no vacío),
+    ``start_s`` (>= 0), ``duration_s`` (> 0) y, opcionales, ``title`` (dict de ``TitleStyle``)
+    y ``animation`` (dict de ``TitleAnimation``). Si no se pasa ``title``/``animation`` se
+    usan los defaults del modelo. El ``id`` del clip es determinista salvo colisión.
+    """
+    result = _clone(edit_project)
+    track = _require_track(result, _require_str(params, "track_id"))
+    if track.kind != "title":
+        raise EditOperationError(
+            f"add_title: la pista {track.id!r} no es de títulos ({track.kind!r})."
+        )
+    text = params.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise EditOperationError("add_title: 'text' (str no vacío) es obligatorio.")
+    start_s = _require_number(params, "start_s")
+    duration_s = _require_number(params, "duration_s")
+    if start_s < 0:
+        raise EditOperationError("add_title: start_s no puede ser negativo.")
+    if duration_s <= 0:
+        raise EditOperationError("add_title: duration_s debe ser > 0.")
+
+    try:
+        title = TitleStyle.model_validate(params.get("title") or {})
+    except Exception as exc:
+        raise EditOperationError(f"add_title: título inválido: {exc}") from exc
+    try:
+        animation = TitleAnimation.model_validate(params.get("animation") or {})
+    except Exception as exc:
+        raise EditOperationError(f"add_title: animación inválida: {exc}") from exc
+
+    base_id = params.get("clip_id")
+    if base_id is not None and not isinstance(base_id, str):
+        raise EditOperationError("add_title: 'clip_id' debe ser str.")
+    clip_id = base_id or f"title_{len(track.clips)}"
+    if result.find_clip(clip_id) is not None:
+        n = len(track.clips) + 1
+        while result.find_clip(f"title_{n}") is not None:
+            n += 1
+        clip_id = f"title_{n}"
+
+    clip = EditClip(
+        id=clip_id,
+        track_id=track.id,
+        kind="title",
+        start_s=round(start_s, 3),
+        duration_s=round(duration_s, 3),
+        text=text,
+        title=title,
+        title_animation=animation,
+    )
+    track.clips.append(clip)
+    return result
+
+
+# Campos del TitleStyle por tipo (reutiliza la decoración fina de TextDecoration).
+_TITLE_NUMERIC = {
+    "font_size",
+    "anchor_x",
+    "anchor_y",
+    "outline_width",
+    "shadow_blur",
+    "shadow_x",
+    "shadow_y",
+    "bg_opacity",
+    "bg_padding",
+    "bg_radius",
+}
+_TITLE_STR = {"font_family", "color", "outline_color", "shadow_color"}
+_TITLE_BOOL = {"bold", "shadow"}
+
+
+def op_set_title_style(edit_project: EditProject, params: dict) -> EditProject:
+    """Edita el estilo de un clip de título (campos de ``TitleStyle``).
+
+    Params: ``clip_id`` y cualquiera de ``font_family``, ``font_size`` (int > 0),
+    ``color``, ``bold`` (bool), ``align`` (``left``|``center``|``right``), ``anchor_x``/
+    ``anchor_y`` (0..1), ``kind`` (``intro``|``lower_third``|``credits``|``plain``) y los
+    campos de contorno/sombra/fondo heredados. Los no indicados conservan su valor.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind != "title":
+        raise EditOperationError(
+            f"set_title_style: el clip {clip.id!r} no es un título ({clip.kind!r})."
+        )
+
+    base = (clip.title or TitleStyle()).model_dump()
+    for key in _TITLE_NUMERIC:
+        if key in params:
+            value = params[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EditOperationError(f"set_title_style: '{key}' debe ser numérico.")
+            base[key] = int(value) if key == "font_size" else float(value)
+    for key in _TITLE_STR:
+        if key in params:
+            value = params[key]
+            if not isinstance(value, str) or not value:
+                raise EditOperationError(f"set_title_style: '{key}' (str) no puede ser vacío.")
+            base[key] = value
+    for key in _TITLE_BOOL:
+        if key in params:
+            if not isinstance(params[key], bool):
+                raise EditOperationError(f"set_title_style: '{key}' debe ser booleano.")
+            base[key] = params[key]
+    if "align" in params:
+        if params["align"] not in ("left", "center", "right"):
+            raise EditOperationError("set_title_style: 'align' inválido.")
+        base["align"] = params["align"]
+    if "kind" in params:
+        if params["kind"] not in ("intro", "lower_third", "credits", "plain"):
+            raise EditOperationError("set_title_style: 'kind' inválido.")
+        base["kind"] = params["kind"]
+    try:
+        clip.title = TitleStyle.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_title_style: {exc}") from exc
+    return result
+
+
+def op_set_title_animation(edit_project: EditProject, params: dict) -> EditProject:
+    """Edita la animación de un clip de título (campos de ``TitleAnimation``).
+
+    Params: ``clip_id`` y cualquiera de ``type`` (enum de ``TitleAnimation``),
+    ``duration_s`` (>= 0) y ``direction`` (``in``|``out``|``both``). Los no indicados
+    conservan su valor.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind != "title":
+        raise EditOperationError(
+            f"set_title_animation: el clip {clip.id!r} no es un título ({clip.kind!r})."
+        )
+
+    base = (clip.title_animation or TitleAnimation()).model_dump()
+    if "type" in params:
+        base["type"] = params["type"]
+    if "duration_s" in params:
+        value = params["duration_s"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise EditOperationError("set_title_animation: 'duration_s' debe ser numérico.")
+        if value < 0:
+            raise EditOperationError("set_title_animation: 'duration_s' no puede ser negativa.")
+        base["duration_s"] = float(value)
+    if "direction" in params:
+        base["direction"] = params["direction"]
+    try:
+        clip.title_animation = TitleAnimation.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_title_animation: {exc}") from exc
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Overlays (imagen / logo / marca de agua / emoji gráfico)
+# --------------------------------------------------------------------------- #
+
+
+def op_add_overlay(edit_project: EditProject, params: dict) -> EditProject:
+    """Crea un clip de overlay (imagen) en una pista ``overlay``.
+
+    Params: ``track_id`` (pista existente de kind ``overlay``), ``asset_id`` (int,
+    imagen subida), ``start_s`` (>= 0), ``duration_s`` (> 0) y, opcional, ``overlay``
+    (dict de ``OverlayStyle``). Si no se pasa ``overlay`` se usan los defaults del modelo.
+    """
+    result = _clone(edit_project)
+    track = _require_track(result, _require_str(params, "track_id"))
+    if track.kind != "overlay":
+        raise EditOperationError(
+            f"add_overlay: la pista {track.id!r} no es de overlays ({track.kind!r})."
+        )
+    asset_id = params.get("asset_id")
+    if isinstance(asset_id, bool) or not isinstance(asset_id, int):
+        raise EditOperationError("add_overlay: 'asset_id' (int) es obligatorio.")
+    start_s = _require_number(params, "start_s")
+    duration_s = _require_number(params, "duration_s")
+    if start_s < 0:
+        raise EditOperationError("add_overlay: start_s no puede ser negativo.")
+    if duration_s <= 0:
+        raise EditOperationError("add_overlay: duration_s debe ser > 0.")
+
+    try:
+        overlay = OverlayStyle.model_validate(params.get("overlay") or {})
+    except Exception as exc:
+        raise EditOperationError(f"add_overlay: overlay inválido: {exc}") from exc
+
+    base_id = params.get("clip_id")
+    if base_id is not None and not isinstance(base_id, str):
+        raise EditOperationError("add_overlay: 'clip_id' debe ser str.")
+    clip_id = base_id or f"overlay_{len(track.clips)}"
+    if result.find_clip(clip_id) is not None:
+        n = len(track.clips) + 1
+        while result.find_clip(f"overlay_{n}") is not None:
+            n += 1
+        clip_id = f"overlay_{n}"
+
+    clip = EditClip(
+        id=clip_id,
+        track_id=track.id,
+        kind="overlay",
+        start_s=round(start_s, 3),
+        duration_s=round(duration_s, 3),
+        asset_id=int(asset_id),
+        overlay=overlay,
+    )
+    track.clips.append(clip)
+    return result
+
+
+_OVERLAY_NUMERIC = {"opacity", "anchor_x", "anchor_y", "width_frac", "rotation"}
+
+
+def op_set_overlay_style(edit_project: EditProject, params: dict) -> EditProject:
+    """Edita el estilo de un clip de overlay (campos de ``OverlayStyle``).
+
+    Params: ``clip_id`` y cualquiera de ``opacity``/``anchor_x``/``anchor_y``/``width_frac``
+    (0..1), ``rotation`` (grados) y ``tile`` (bool). Los no indicados conservan su valor.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind != "overlay":
+        raise EditOperationError(
+            f"set_overlay_style: el clip {clip.id!r} no es un overlay ({clip.kind!r})."
+        )
+
+    base = (clip.overlay or OverlayStyle()).model_dump()
+    for key in _OVERLAY_NUMERIC:
+        if key in params:
+            value = params[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EditOperationError(f"set_overlay_style: '{key}' debe ser numérico.")
+            base[key] = float(value)
+    if "tile" in params:
+        if not isinstance(params["tile"], bool):
+            raise EditOperationError("set_overlay_style: 'tile' debe ser booleano.")
+        base["tile"] = params["tile"]
+    try:
+        clip.overlay = OverlayStyle.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_overlay_style: {exc}") from exc
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
@@ -781,6 +1093,12 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "apply_subtitle_preset": op_apply_subtitle_preset,
     "apply_subtitle_preset_all": op_apply_subtitle_preset_all,
     "set_format": op_set_format,
+    "add_track": op_add_track,
+    "add_title": op_add_title,
+    "set_title_style": op_set_title_style,
+    "set_title_animation": op_set_title_animation,
+    "add_overlay": op_add_overlay,
+    "set_overlay_style": op_set_overlay_style,
 }
 
 

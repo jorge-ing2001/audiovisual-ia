@@ -14,9 +14,17 @@ export type TrackKind =
   | "voice"
   | "music"
   | "sfx"
-  | "subtitle";
+  | "subtitle"
+  | "title"
+  | "overlay";
 
 export const VISUAL_KINDS: readonly TrackKind[] = ["video", "image"];
+export const VISUAL_RENDER_KINDS: readonly TrackKind[] = [
+  "video",
+  "image",
+  "title",
+  "overlay",
+];
 export const AUDIO_KINDS: readonly TrackKind[] = ["voice", "music", "sfx"];
 
 export interface VisualTransform {
@@ -86,6 +94,53 @@ export interface SubtitleWord {
   end_s: number;
 }
 
+// Animación de un clip de título (espejo de TitleAnimation en model.py).
+export interface TitleAnimation {
+  type:
+    | "none"
+    | "fade"
+    | "slide_up"
+    | "slide_down"
+    | "typewriter"
+    | "scale_in"
+    | "credits_roll";
+  duration_s: number;
+  direction: "in" | "out" | "both";
+}
+
+// Estilo de un clip de título (espejo de TitleStyle en model.py). Reutiliza los campos de
+// decoración fina de TextDecoration (contorno/sombra/fondo) + layout por anclaje.
+export interface TitleStyle {
+  font_family: string;
+  font_size: number;
+  color: string;
+  bold: boolean;
+  align: "left" | "center" | "right";
+  anchor_x: number;
+  anchor_y: number;
+  kind: "intro" | "lower_third" | "credits" | "plain";
+  outline_color: string;
+  outline_width: number;
+  shadow: boolean;
+  shadow_color: string;
+  shadow_blur: number;
+  shadow_x: number;
+  shadow_y: number;
+  bg_opacity: number;
+  bg_padding: number;
+  bg_radius: number;
+}
+
+// Estilo de un clip de overlay (imagen/logo/marca de agua). Espejo de OverlayStyle.
+export interface OverlayStyle {
+  opacity: number;
+  anchor_x: number;
+  anchor_y: number;
+  width_frac: number;
+  rotation: number;
+  tile: boolean;
+}
+
 export interface EditClip {
   id: string;
   track_id: string;
@@ -113,6 +168,13 @@ export interface EditClip {
   text: string | null;
   style: SubtitleStyle | null;
   words: SubtitleWord[];
+
+  // Title (texto animado: intro/lower-third/créditos). Reutiliza `text`.
+  title: TitleStyle | null;
+  title_animation: TitleAnimation | null;
+
+  // Overlay (imagen/logo/marca de agua). Reutiliza `asset_id`.
+  overlay: OverlayStyle | null;
 }
 
 export interface EditTrack {

@@ -26,6 +26,7 @@ import {
   putEditProject,
   redoEdit,
   undoEdit,
+  uploadOverlay,
   videoDownloadUrl,
   type Asset,
   type Job,
@@ -68,6 +69,8 @@ const TRACK_COLORS: Record<string, string> = {
   music: "bg-amber-500/70",
   sfx: "bg-rose-500/70",
   subtitle: "bg-fuchsia-500/70",
+  title: "bg-cyan-500/70",
+  overlay: "bg-lime-500/70",
 };
 
 export default function EditorWorkspace({ projectId }: { projectId: number }) {
@@ -306,6 +309,84 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     [runOp],
   );
 
+  // Añadir un título (FEAT-005): crea la pista `title` si no existe (add_track) y añade un
+  // clip de título (add_title). Ambas ops versionan; el preview lo refleja al instante.
+  const handleAddTitle = useCallback(async () => {
+    if (!project) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      let current = project;
+      let titleTrack = current.tracks.find((t) => t.kind === "title");
+      if (!titleTrack) {
+        const read = await applyEditOp(projectId, "add_track", {
+          kind: "title",
+          name: "Títulos",
+        });
+        current = read.edit_project;
+        titleTrack = current.tracks.find((t) => t.kind === "title");
+      }
+      if (!titleTrack) throw new ApiError(0, "No se pudo crear la pista de títulos.");
+      const start = editProjectDurationS(current) > 0 ? 0 : 0;
+      const read = await applyEditOp(projectId, "add_title", {
+        track_id: titleTrack.id,
+        text: "Título",
+        start_s: start,
+        duration_s: 3.0,
+        title: { kind: "intro" },
+        animation: { type: "fade" },
+      });
+      setProject(read.edit_project);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo añadir el título",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [project, projectId]);
+
+  // Subir un logo/overlay (FEAT-006): sube la imagen (uploadOverlay), crea la pista
+  // `overlay` si no existe y añade un clip de overlay con el asset_id devuelto.
+  const handleUploadOverlay = useCallback(
+    async (file: File) => {
+      if (!project) return;
+      setBusy(true);
+      setActionError(null);
+      try {
+        const asset = await uploadOverlay(projectId, file);
+        setAssets((prev) => [asset, ...prev]);
+        let current = project;
+        let overlayTrack = current.tracks.find((t) => t.kind === "overlay");
+        if (!overlayTrack) {
+          const read = await applyEditOp(projectId, "add_track", {
+            kind: "overlay",
+            name: "Overlays",
+          });
+          current = read.edit_project;
+          overlayTrack = current.tracks.find((t) => t.kind === "overlay");
+        }
+        if (!overlayTrack)
+          throw new ApiError(0, "No se pudo crear la pista de overlays.");
+        const duration = Math.max(1, editProjectDurationS(current) || 5);
+        const read = await applyEditOp(projectId, "add_overlay", {
+          track_id: overlayTrack.id,
+          asset_id: asset.id,
+          start_s: 0,
+          duration_s: duration,
+        });
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudo subir el overlay",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [project, projectId],
+  );
+
   // ------------------------------- render ------------------------------- //
 
   if (loading) {
@@ -471,6 +552,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         </Card>
       )}
 
+      {/* Añadir títulos / subir overlays (FEAT-005/006). */}
+      <TitleOverlayToolbar
+        busy={busy}
+        onAddTitle={handleAddTitle}
+        onUploadOverlay={handleUploadOverlay}
+      />
+
       {/* Línea de tiempo multipista */}
       <Timeline
         project={project}
@@ -589,6 +677,52 @@ function SubtitleToolbar({
 }
 
 // --------------------------------------------------------------------------- //
+// Barra de títulos / overlays (FEAT-005/006)
+// --------------------------------------------------------------------------- //
+
+function TitleOverlayToolbar({
+  busy,
+  onAddTitle,
+  onUploadOverlay,
+}: {
+  busy: boolean;
+  onAddTitle: () => void | Promise<void>;
+  onUploadOverlay: (file: File) => void | Promise<void>;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  return (
+    <Card className="flex flex-wrap items-center gap-3">
+      <h2 className="mr-2 font-medium text-neutral-100">Títulos y overlays</h2>
+      <Button variant="secondary" loading={busy} onClick={() => void onAddTitle()}>
+        + Añadir título
+      </Button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".png,.jpg,.jpeg,.webp,.gif,.svg,image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void onUploadOverlay(file);
+          e.target.value = "";
+        }}
+      />
+      <Button
+        variant="secondary"
+        loading={busy}
+        onClick={() => fileRef.current?.click()}
+      >
+        + Subir logo / overlay
+      </Button>
+      <p className="text-xs text-neutral-500">
+        El título se añade como clip animado; el logo/overlay se sube y se coloca como marca
+        gráfica (ajusta opacidad, tamaño, rotación y mosaico en el inspector).
+      </p>
+    </Card>
+  );
+}
+
+// --------------------------------------------------------------------------- //
 // Línea de tiempo multipista
 // --------------------------------------------------------------------------- //
 
@@ -639,8 +773,8 @@ function Timeline({
                     style={{ left: `${left}%`, width: `${width}%` }}
                   >
                     <span className="truncate">
-                      {clip.kind === "subtitle"
-                        ? clip.text || "subtítulo"
+                      {clip.kind === "subtitle" || clip.kind === "title"
+                        ? clip.text || clip.kind
                         : clip.id}
                     </span>
                   </button>
@@ -703,6 +837,12 @@ function ClipInspector({
       )}
       {clip.kind === "subtitle" && (
         <SubtitleInspector clip={clip} busy={busy} onOp={onOp} />
+      )}
+      {clip.kind === "title" && (
+        <TitleInspector clip={clip} busy={busy} onOp={onOp} />
+      )}
+      {clip.kind === "overlay" && (
+        <OverlayInspector clip={clip} busy={busy} onOp={onOp} />
       )}
 
       {/* Acciones de clip (operaciones puras del backend) */}
@@ -1265,6 +1405,267 @@ function SubtitleInspector({
           Sombra activa
         </label>
       </div>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Inspector de título (FEAT-005): texto, estilo, animación y tipo
+// --------------------------------------------------------------------------- //
+
+function TitleInspector({
+  clip,
+  busy,
+  onOp,
+}: {
+  clip: EditClip;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+}) {
+  const [text, setText] = useState(clip.text ?? "");
+  const title = clip.title;
+  const anim = clip.title_animation;
+
+  const setStyle = (patch: Record<string, unknown>) =>
+    void onOp("set_title_style", { clip_id: clip.id, ...patch });
+  const setAnim = (patch: Record<string, unknown>) =>
+    void onOp("set_title_animation", { clip_id: clip.id, ...patch });
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
+      <h4 className="text-xs font-semibold uppercase text-neutral-500">Título</h4>
+      <Field label="Texto">
+        <TextArea
+          rows={2}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={() => {
+            const v = text.trim();
+            if (v && v !== (clip.text ?? ""))
+              void onOp("set_text", { clip_id: clip.id, text });
+          }}
+          disabled={busy}
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Tipo">
+          <Select
+            value={title?.kind ?? "plain"}
+            onChange={(e) => setStyle({ kind: e.target.value })}
+            disabled={busy}
+          >
+            <option value="plain">normal</option>
+            <option value="intro">intro</option>
+            <option value="lower_third">lower-third</option>
+            <option value="credits">créditos</option>
+          </Select>
+        </Field>
+        <Field label="Animación">
+          <Select
+            value={anim?.type ?? "fade"}
+            onChange={(e) => setAnim({ type: e.target.value })}
+            disabled={busy}
+          >
+            <option value="none">ninguna</option>
+            <option value="fade">fundido</option>
+            <option value="slide_up">deslizar arriba</option>
+            <option value="slide_down">deslizar abajo</option>
+            <option value="scale_in">zoom</option>
+            <option value="typewriter">máquina de escribir</option>
+            <option value="credits_roll">créditos (scroll)</option>
+          </Select>
+        </Field>
+        <Field label="Alineación">
+          <Select
+            value={title?.align ?? "center"}
+            onChange={(e) => setStyle({ align: e.target.value })}
+            disabled={busy}
+          >
+            <option value="left">izquierda</option>
+            <option value="center">centro</option>
+            <option value="right">derecha</option>
+          </Select>
+        </Field>
+        <Field label="Tamaño fuente">
+          <TextInput
+            type="number"
+            min="8"
+            step="4"
+            defaultValue={title?.font_size ?? 96}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v > 0) setStyle({ font_size: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Color texto">
+          <TextInput
+            type="text"
+            defaultValue={title?.color ?? "#FFFFFF"}
+            onBlur={(e) => setStyle({ color: e.target.value || "#FFFFFF" })}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Duración animación (s)">
+          <TextInput
+            type="number"
+            min="0"
+            step="0.1"
+            defaultValue={anim?.duration_s ?? 0.8}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0) setAnim({ duration_s: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Posición X (0–1)">
+          <TextInput
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue={title?.anchor_x ?? 0.5}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v <= 1)
+                setStyle({ anchor_x: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Posición Y (0–1)">
+          <TextInput
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue={title?.anchor_y ?? 0.5}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v <= 1)
+                setStyle({ anchor_y: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-neutral-300">
+        <input
+          type="checkbox"
+          defaultChecked={title?.bold ?? true}
+          onChange={(e) => setStyle({ bold: e.target.checked })}
+          disabled={busy}
+        />
+        Negrita
+      </label>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Inspector de overlay (FEAT-006): opacidad, tamaño, rotación, mosaico
+// --------------------------------------------------------------------------- //
+
+function OverlayInspector({
+  clip,
+  busy,
+  onOp,
+}: {
+  clip: EditClip;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+}) {
+  const overlay = clip.overlay;
+  const setStyle = (patch: Record<string, unknown>) =>
+    void onOp("set_overlay_style", { clip_id: clip.id, ...patch });
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
+      <h4 className="text-xs font-semibold uppercase text-neutral-500">Overlay</h4>
+      <Field label={`Opacidad (${(overlay?.opacity ?? 1).toFixed(2)})`}>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          defaultValue={overlay?.opacity ?? 1}
+          onMouseUp={(e) =>
+            setStyle({ opacity: Number((e.target as HTMLInputElement).value) })
+          }
+          onTouchEnd={(e) =>
+            setStyle({ opacity: Number((e.target as HTMLInputElement).value) })
+          }
+          disabled={busy}
+          className="w-full"
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Tamaño (fracción ancho 0–1)">
+          <TextInput
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue={overlay?.width_frac ?? 0.2}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v <= 1)
+                setStyle({ width_frac: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Rotación (grados)">
+          <TextInput
+            type="number"
+            step="5"
+            defaultValue={overlay?.rotation ?? 0}
+            onBlur={(e) => setStyle({ rotation: Number(e.target.value) || 0 })}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Posición X (0–1)">
+          <TextInput
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue={overlay?.anchor_x ?? 0.5}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v <= 1)
+                setStyle({ anchor_x: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Posición Y (0–1)">
+          <TextInput
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue={overlay?.anchor_y ?? 0.5}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v <= 1)
+                setStyle({ anchor_y: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-neutral-300">
+        <input
+          type="checkbox"
+          defaultChecked={overlay?.tile ?? false}
+          onChange={(e) => setStyle({ tile: e.target.checked })}
+          disabled={busy}
+        />
+        Mosaico (marca de agua repetida)
+      </label>
     </div>
   );
 }

@@ -302,6 +302,45 @@ export async function uploadSceneImage(sceneId: number, file: File): Promise<Ass
   return (await res.json()) as Asset;
 }
 
+/**
+ * Sube un overlay/logo/marca de agua a nivel de PROYECTO (FEAT-006).
+ *
+ * Envía `multipart/form-data` a `POST /projects/{id}/overlays/upload`. El backend valida
+ * tipo (PNG/JPG/JPEG/WEBP/GIF/SVG) y tamaño, guarda el fichero en `overlays/uploads/` del
+ * workspace y crea un `Asset(kind='image', provider='upload', scene_id=null)` que luego se
+ * referencia con la operación `add_overlay`.
+ */
+export async function uploadOverlay(projectId: number, file: File): Promise<Asset> {
+  const form = new FormData();
+  form.append("file", file);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/projects/${projectId}/overlays/upload`, {
+      method: "POST",
+      cache: "no-store",
+      body: form,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error de red";
+    throw new ApiError(
+      0,
+      `No se pudo contactar con el backend (${API_BASE_URL}): ${message}`,
+    );
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (body.detail) detail = JSON.stringify(body.detail);
+    } catch {
+      // cuerpo no-JSON
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as Asset;
+}
+
 // --------------------------------------------------------------------------- //
 // Assets (/assets)
 // --------------------------------------------------------------------------- //

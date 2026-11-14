@@ -16,12 +16,14 @@ cambiar el formato del proyecto al aplicarlos. ``classic``/``cinema`` son 16:9 y
 
 from __future__ import annotations
 
-from app.engines.editor.model import SubtitleStyle
+from app.engines.editor.model import SubtitleStyle, TitleAnimation, TitleStyle
 
 __all__ = [
     "SUBTITLE_PRESETS",
     "FORMAT_PRESETS",
+    "TITLE_PRESETS",
     "subtitle_style_from_preset",
+    "title_preset",
     "PRESET_FORMAT",
 ]
 
@@ -182,6 +184,84 @@ FORMAT_PRESETS: dict[str, dict] = {
         "safe_bottom_frac": 0.16,
     },
 }
+
+# --------------------------------------------------------------------------- #
+# Presets de título (TitleStyle + TitleAnimation por defecto)
+# --------------------------------------------------------------------------- #
+#
+# Datos puros: cada preset describe un ``style`` (campos de TitleStyle) y un ``animation``
+# (campos de TitleAnimation). ``title_preset(name)`` los materializa validados. Añadir un
+# preset NO toca el render (son datos).
+
+TITLE_PRESETS: dict[str, dict] = {
+    # Título de apertura: grande, centrado, entra con escala (impacto).
+    "intro": {
+        "style": {
+            "kind": "intro",
+            "font_family": "Inter, sans-serif",
+            "font_size": 120,
+            "color": "#FFFFFF",
+            "bold": True,
+            "align": "center",
+            "anchor_x": 0.5,
+            "anchor_y": 0.5,
+            "shadow": True,
+            "shadow_color": "#000000",
+            "shadow_blur": 12.0,
+            "shadow_y": 3.0,
+        },
+        "animation": {"type": "scale_in", "duration_s": 0.8, "direction": "both"},
+    },
+    # Lower-third: rótulo inferior izquierda, caja semitransparente, entra deslizando.
+    "lower_third": {
+        "style": {
+            "kind": "lower_third",
+            "font_family": "Inter, sans-serif",
+            "font_size": 56,
+            "color": "#FFFFFF",
+            "bold": True,
+            "align": "left",
+            "anchor_x": 0.28,
+            "anchor_y": 0.82,
+            "bg_opacity": 0.55,
+            "bg_padding": 0.3,
+            "bg_radius": 10.0,
+        },
+        "animation": {"type": "slide_up", "duration_s": 0.6, "direction": "both"},
+    },
+    # Créditos finales: desplazamiento vertical continuo a lo largo del clip.
+    "credits": {
+        "style": {
+            "kind": "credits",
+            "font_family": "Inter, sans-serif",
+            "font_size": 64,
+            "color": "#FFFFFF",
+            "bold": False,
+            "align": "center",
+            "anchor_x": 0.5,
+            "anchor_y": 0.5,
+        },
+        "animation": {"type": "credits_roll", "duration_s": 0.0, "direction": "both"},
+    },
+}
+
+
+def title_preset(name: str) -> tuple[TitleStyle, TitleAnimation]:
+    """Materializa ``(TitleStyle, TitleAnimation)`` validados de un preset de título.
+
+    Lanza ``ValueError`` si el preset no existe.
+    """
+    if name not in TITLE_PRESETS:
+        raise ValueError(
+            f"Preset de título desconocido: {name!r}. "
+            f"Disponibles: {', '.join(sorted(TITLE_PRESETS))}."
+        )
+    data = TITLE_PRESETS[name]
+    return (
+        TitleStyle.model_validate(data["style"]),
+        TitleAnimation.model_validate(data["animation"]),
+    )
+
 
 #: Formato vertical implícito de cada preset de subtítulo 9:16 (el resto no fuerza formato).
 PRESET_FORMAT: dict[str, str] = {

@@ -110,6 +110,75 @@ export interface EditAudioClipInput {
   volume: number;
 }
 
+// Estilo de título compilado (espejo de _title_clip_props en compile.py).
+export interface EditTitleStyleInput {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  align: "left" | "center" | "right";
+  anchorX: number;
+  anchorY: number;
+  kind: "intro" | "lower_third" | "credits" | "plain";
+  outlineColor: string;
+  outlineWidth: number;
+  shadow: boolean;
+  shadowColor: string;
+  shadowBlur: number;
+  shadowX: number;
+  shadowY: number;
+  bgOpacity: number;
+  bgPadding: number;
+  bgRadius: number;
+}
+
+export interface EditTitleAnimationInput {
+  type:
+    | "none"
+    | "fade"
+    | "slide_up"
+    | "slide_down"
+    | "typewriter"
+    | "scale_in"
+    | "credits_roll";
+  durationInFrames: number;
+  durationS: number;
+  direction: "in" | "out" | "both";
+}
+
+export interface EditTitleClipInput {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  text: string;
+  style: EditTitleStyleInput | null;
+  animation: EditTitleAnimationInput | null;
+  trackOrder?: number;
+}
+
+export interface EditOverlayStyleInput {
+  opacity: number;
+  anchorX: number;
+  anchorY: number;
+  widthFrac: number;
+  rotation: number;
+  tile: boolean;
+}
+
+export interface EditOverlayClipInput {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  src: string | null;
+  assetId: number | null;
+  overlay: EditOverlayStyleInput | null;
+  trackOrder?: number;
+}
+
 export interface EditInputProps {
   fps: number;
   width: number;
@@ -119,6 +188,9 @@ export interface EditInputProps {
   subtitleClips: EditSubtitleClipInput[];
   audioClips: EditAudioClipInput[];
   muted: boolean;
+  // Títulos y overlays: solo presentes cuando hay clips (regresión: props idéntico sin ellos).
+  titleClips?: EditTitleClipInput[];
+  overlayClips?: EditOverlayClipInput[];
   // Zonas seguras 9:16: solo presentes cuando el formato las define (> 0). Sin ellas, el
   // render encuadra igual que antes (regresión 16:9).
   safeTop?: number;
@@ -302,6 +374,79 @@ function audioProps(
   };
 }
 
+function titleProps(clip: EditClip, fps: number): EditTitleClipInput {
+  const t = clip.title;
+  const style: EditTitleStyleInput | null = t
+    ? {
+        fontFamily: t.font_family,
+        fontSize: t.font_size,
+        color: t.color,
+        bold: t.bold,
+        align: t.align,
+        anchorX: t.anchor_x,
+        anchorY: t.anchor_y,
+        kind: t.kind,
+        outlineColor: t.outline_color,
+        outlineWidth: t.outline_width,
+        shadow: t.shadow,
+        shadowColor: t.shadow_color,
+        shadowBlur: t.shadow_blur,
+        shadowX: t.shadow_x,
+        shadowY: t.shadow_y,
+        bgOpacity: t.bg_opacity,
+        bgPadding: t.bg_padding,
+        bgRadius: t.bg_radius,
+      }
+    : null;
+  const a = clip.title_animation;
+  const animation: EditTitleAnimationInput | null = a
+    ? {
+        type: a.type,
+        durationInFrames: framesLen(a.duration_s, fps),
+        durationS: round(a.duration_s),
+        direction: a.direction,
+      }
+    : null;
+  return {
+    id: clip.id,
+    from: frameAt(clip.start_s, fps),
+    durationInFrames: framesLen(clip.duration_s, fps),
+    startS: round(clip.start_s),
+    durationS: round(clip.duration_s),
+    text: clip.text ?? "",
+    style,
+    animation,
+  };
+}
+
+function overlayProps(
+  clip: EditClip,
+  fps: number,
+  resolveSrc: (assetId: number | null) => string | null,
+): EditOverlayClipInput {
+  const o = clip.overlay;
+  const overlay: EditOverlayStyleInput | null = o
+    ? {
+        opacity: o.opacity,
+        anchorX: o.anchor_x,
+        anchorY: o.anchor_y,
+        widthFrac: o.width_frac,
+        rotation: o.rotation,
+        tile: o.tile,
+      }
+    : null;
+  return {
+    id: clip.id,
+    from: frameAt(clip.start_s, fps),
+    durationInFrames: framesLen(clip.duration_s, fps),
+    startS: round(clip.start_s),
+    durationS: round(clip.duration_s),
+    src: resolveSrc(clip.asset_id),
+    assetId: clip.asset_id,
+    overlay,
+  };
+}
+
 /**
  * Compila el EditProject a inputProps de la composición "Edit" para el Player.
  *
@@ -318,6 +463,8 @@ export function compileEditInputProps(
   const visual: EditVisualClipInput[] = [];
   const subtitle: EditSubtitleClipInput[] = [];
   const audio: EditAudioClipInput[] = [];
+  const title: EditTitleClipInput[] = [];
+  const overlay: EditOverlayClipInput[] = [];
 
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
   for (const track of tracks) {
@@ -327,6 +474,13 @@ export function compileEditInputProps(
         visual.push(visualProps(clip, track, fps, resolveSrc));
       } else if (clip.kind === "subtitle") {
         subtitle.push(subtitleProps(clip, fps));
+      } else if (clip.kind === "title") {
+        title.push({ ...titleProps(clip, fps), trackOrder: track.order });
+      } else if (clip.kind === "overlay") {
+        overlay.push({
+          ...overlayProps(clip, fps, resolveSrc),
+          trackOrder: track.order,
+        });
       } else if (
         (AUDIO_KINDS as readonly string[]).includes(clip.kind) &&
         !track.muted
@@ -339,6 +493,10 @@ export function compileEditInputProps(
   visual.sort((a, b) => a.from - b.from || a.trackOrder - b.trackOrder);
   subtitle.sort((a, b) => a.from - b.from);
   audio.sort((a, b) => a.from - b.from);
+  title.sort((a, b) => a.from - b.from || (a.trackOrder ?? 0) - (b.trackOrder ?? 0));
+  overlay.sort(
+    (a, b) => a.from - b.from || (a.trackOrder ?? 0) - (b.trackOrder ?? 0),
+  );
 
   const durationS = editProjectDuration(project);
   const durationInFrames = durationS > 0 ? framesLen(durationS, fps) : 1;
@@ -361,6 +519,10 @@ export function compileEditInputProps(
     props.safeTop = Math.round(safeTop * 10000) / 10000;
     props.safeBottom = Math.round(safeBottom * 10000) / 10000;
   }
+  // Títulos/overlays SOLO cuando hay clips (regresión: props idéntico sin ellos). Espejo
+  // de compile.py (titleClips/overlayClips condicionales).
+  if (title.length > 0) props.titleClips = title;
+  if (overlay.length > 0) props.overlayClips = overlay;
   return props;
 }
 

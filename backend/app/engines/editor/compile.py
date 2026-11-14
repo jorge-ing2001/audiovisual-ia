@@ -168,6 +168,89 @@ def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
     return props
 
 
+def _title_clip_props(clip: EditClip, fps: int) -> dict:
+    """Props de un clip de título (texto animado) para la composición ``Edit``.
+
+    Emite ``text`` + ``style`` (TitleStyle completo) + ``animation`` (TitleAnimation). Si
+    el clip no trae estilo/animación explícitos se usan los defaults del modelo, de modo
+    que un título siempre lleva estilo resoluble en el render.
+    """
+    title = clip.title
+    style_props = None
+    if title is not None:
+        style_props = {
+            "fontFamily": title.font_family,
+            "fontSize": title.font_size,
+            "color": title.color,
+            "bold": title.bold,
+            "align": title.align,
+            "anchorX": title.anchor_x,
+            "anchorY": title.anchor_y,
+            "kind": title.kind,
+            # Decoración fina heredada (siempre presente en el título: no hay regresión
+            # previa que preservar, el tipo de pista es nuevo).
+            "outlineColor": title.outline_color,
+            "outlineWidth": title.outline_width,
+            "shadow": title.shadow,
+            "shadowColor": title.shadow_color,
+            "shadowBlur": title.shadow_blur,
+            "shadowX": title.shadow_x,
+            "shadowY": title.shadow_y,
+            "bgOpacity": title.bg_opacity,
+            "bgPadding": title.bg_padding,
+            "bgRadius": title.bg_radius,
+        }
+    animation = clip.title_animation
+    animation_props = None
+    if animation is not None:
+        animation_props = {
+            "type": animation.type,
+            "durationInFrames": _frames_len(animation.duration_s, fps),
+            "durationS": round(animation.duration_s, 3),
+            "direction": animation.direction,
+        }
+    return {
+        "id": clip.id,
+        "from": _frame_at(clip.start_s, fps),
+        "durationInFrames": _frames_len(clip.duration_s, fps),
+        "startS": round(clip.start_s, 3),
+        "durationS": round(clip.duration_s, 3),
+        "text": clip.text or "",
+        "style": style_props,
+        "animation": animation_props,
+    }
+
+
+def _overlay_clip_props(clip: EditClip, fps: int, resolve_src) -> dict:
+    """Props de un clip de overlay (imagen/logo/marca de agua) para la composición ``Edit``.
+
+    Emite ``src`` (vía ``resolve_asset_src``: URL en preview, ruta relativa en headless) +
+    ``overlay`` (OverlayStyle). El render dibuja la imagen anclada con opacidad/tamaño/
+    rotación y, si ``tile``, en mosaico.
+    """
+    overlay = clip.overlay
+    overlay_props = None
+    if overlay is not None:
+        overlay_props = {
+            "opacity": overlay.opacity,
+            "anchorX": overlay.anchor_x,
+            "anchorY": overlay.anchor_y,
+            "widthFrac": overlay.width_frac,
+            "rotation": overlay.rotation,
+            "tile": overlay.tile,
+        }
+    return {
+        "id": clip.id,
+        "from": _frame_at(clip.start_s, fps),
+        "durationInFrames": _frames_len(clip.duration_s, fps),
+        "startS": round(clip.start_s, 3),
+        "durationS": round(clip.duration_s, 3),
+        "src": resolve_src(clip.asset_id),
+        "assetId": clip.asset_id,
+        "overlay": overlay_props,
+    }
+
+
 def _audio_clip_props(clip: EditClip, track: EditTrack, fps: int, resolve_src) -> dict:
     """Props de un clip de audio para el PREVIEW del Player (composición ``Edit``).
 
@@ -212,6 +295,8 @@ def compile_remotion_props(
     visual_clips: list[dict] = []
     subtitle_clips: list[dict] = []
     audio_clips: list[dict] = []
+    title_clips: list[dict] = []
+    overlay_clips: list[dict] = []
     for track in sorted(edit_project.tracks, key=lambda t: t.order):
         for clip in track.clips:
             if not clip.enabled:
@@ -223,6 +308,14 @@ def compile_remotion_props(
                 visual_clips.append(props)
             elif clip.kind == "subtitle":
                 subtitle_clips.append(_subtitle_clip_props(clip, fps))
+            elif clip.kind == "title":
+                props = _title_clip_props(clip, fps)
+                props["trackOrder"] = track.order
+                title_clips.append(props)
+            elif clip.kind == "overlay":
+                props = _overlay_clip_props(clip, fps, resolve)
+                props["trackOrder"] = track.order
+                overlay_clips.append(props)
             elif clip.kind in AUDIO_KINDS and not track.muted:
                 audio_clips.append(_audio_clip_props(clip, track, fps, resolve))
 
@@ -230,6 +323,8 @@ def compile_remotion_props(
     visual_clips.sort(key=lambda c: (c["from"], c["trackOrder"]))
     subtitle_clips.sort(key=lambda c: c["from"])
     audio_clips.sort(key=lambda c: c["from"])
+    title_clips.sort(key=lambda c: (c["from"], c["trackOrder"]))
+    overlay_clips.sort(key=lambda c: (c["from"], c["trackOrder"]))
 
     total_frames = _frames_len(edit_project.duration_s, fps) if edit_project.duration_s > 0 else 1
 
@@ -250,6 +345,13 @@ def compile_remotion_props(
     if safe_top > 0 or safe_bottom > 0:
         props["safeTop"] = round(safe_top, 4)
         props["safeBottom"] = round(safe_bottom, 4)
+    # Pistas de título y overlay: SOLO se emiten cuando hay clips, de modo que un
+    # EditProject sin títulos/overlays produce EXACTAMENTE el mismo inputProps que antes
+    # del Bloque 2 (invariante de regresión §10, patrón de safeTop/safeBottom).
+    if title_clips:
+        props["titleClips"] = title_clips
+    if overlay_clips:
+        props["overlayClips"] = overlay_clips
     return props
 
 
