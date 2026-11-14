@@ -83,6 +83,30 @@ def _visual_clip_props(
     }
 
 
+# Defaults NEUTROS de la decoración fina de texto (TextDecoration). Si TODOS los campos de
+# un estilo coinciden con estos, NO se emiten claves nuevas en inputProps (regresión §10:
+# un EditProject con estilo por defecto produce exactamente el mismo inputProps que antes).
+_DECORATION_DEFAULTS = {
+    "outline_color": "#000000",
+    "outline_width": 0.0,
+    "shadow": False,
+    "shadow_color": "#000000",
+    "shadow_blur": 0.0,
+    "shadow_x": 0.0,
+    "shadow_y": 0.0,
+    "bg_opacity": 1.0,
+    "bg_padding": 0.2,
+    "bg_radius": 8.0,
+}
+
+
+def _decoration_is_default(style) -> bool:
+    """``True`` si la decoración fina del estilo está toda en su valor por defecto."""
+    return all(
+        getattr(style, key) == default for key, default in _DECORATION_DEFAULTS.items()
+    )
+
+
 def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
     style = clip.style
     style_props = None
@@ -100,6 +124,20 @@ def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
             "y": style.y,
             "preset": style.preset,
         }
+        # Decoración fina (contorno/sombra/fondo) SOLO cuando difiere del default: así un
+        # EditProject con estilo por defecto produce EXACTAMENTE el mismo inputProps que
+        # antes del Bloque 2 (invariante de regresión §10).
+        if not _decoration_is_default(style):
+            style_props["outlineColor"] = style.outline_color
+            style_props["outlineWidth"] = style.outline_width
+            style_props["shadow"] = style.shadow
+            style_props["shadowColor"] = style.shadow_color
+            style_props["shadowBlur"] = style.shadow_blur
+            style_props["shadowX"] = style.shadow_x
+            style_props["shadowY"] = style.shadow_y
+            style_props["bgOpacity"] = style.bg_opacity
+            style_props["bgPadding"] = style.bg_padding
+            style_props["bgRadius"] = style.bg_radius
         # Campos de karaoke SOLO cuando está activo: un EditProject sin karaoke produce
         # exactamente el mismo inputProps que antes (invariante de regresión §10).
         if karaoke_on:
@@ -195,7 +233,7 @@ def compile_remotion_props(
 
     total_frames = _frames_len(edit_project.duration_s, fps) if edit_project.duration_s > 0 else 1
 
-    return {
+    props = {
         "fps": fps,
         "width": edit_project.meta.width,
         "height": edit_project.meta.height,
@@ -205,6 +243,14 @@ def compile_remotion_props(
         "audioClips": audio_clips,
         "muted": muted,
     }
+    # Zonas seguras del formato (9:16) SOLO cuando están definidas (> 0): un EditProject
+    # 16:9 sin zonas seguras produce EXACTAMENTE el mismo inputProps que antes (regresión).
+    safe_top = edit_project.meta.safe_top_frac
+    safe_bottom = edit_project.meta.safe_bottom_frac
+    if safe_top > 0 or safe_bottom > 0:
+        props["safeTop"] = round(safe_top, 4)
+        props["safeBottom"] = round(safe_bottom, 4)
+    return props
 
 
 def compile_audio_tracks(

@@ -29,9 +29,15 @@ from app.engines.editor.model import (
     VISUAL_KINDS,
     ClipTransition,
     EditClip,
+    EditMeta,
     EditProject,
     SubtitleStyle,
     VisualTransform,
+)
+from app.engines.editor.presets import (
+    FORMAT_PRESETS,
+    SUBTITLE_PRESETS,
+    subtitle_style_from_preset,
 )
 
 __all__ = [
@@ -54,8 +60,14 @@ __all__ = [
     "op_set_timing",
     "op_set_style",
     "op_set_karaoke",
+    "op_apply_subtitle_preset",
+    "op_apply_subtitle_preset_all",
+    "op_set_format",
     "op_merge",
 ]
+
+# Presets de subtítulo admitidos (validación del campo ``preset``).
+_SUBTITLE_PRESETS = tuple(sorted(SUBTITLE_PRESETS))
 
 
 class EditOperationError(ValueError):
@@ -465,18 +477,34 @@ def op_set_timing(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
-_STYLE_NUMERIC = {"font_size", "x", "y"}
-_STYLE_STR = {"font_family", "color"}
-_STYLE_BOOL = {"bold", "outline"}
+# Campos numéricos del estilo (tipografía + decoración fina de TextDecoration).
+_STYLE_NUMERIC = {
+    "font_size",
+    "x",
+    "y",
+    "outline_width",
+    "shadow_blur",
+    "shadow_x",
+    "shadow_y",
+    "bg_opacity",
+    "bg_padding",
+    "bg_radius",
+    "highlight_scale",
+}
+_STYLE_STR = {"font_family", "color", "outline_color", "shadow_color", "highlight_color"}
+_STYLE_BOOL = {"bold", "outline", "shadow", "karaoke"}
 
 
 def op_set_style(edit_project: EditProject, params: dict) -> EditProject:
-    """Fija el estilo completo de un clip de subtítulo.
+    """Fija el estilo completo de un clip de subtítulo (incluida la decoración fina).
 
     Params: ``clip_id`` y cualquiera de ``font_family`` (str), ``font_size`` (int > 0),
     ``color`` (str), ``bg_color`` (str|null), ``bold`` (bool), ``outline`` (bool),
-    ``position`` (``top``|``center``|``bottom``), ``x``/``y`` (px) y ``preset``
-    (``classic``|``tiktok``). Los campos no indicados conservan su valor.
+    ``position`` (``top``|``center``|``bottom``), ``x``/``y`` (px), ``preset``
+    (``classic``|``tiktok``|``reels``|``shorts``|``cinema``|``clean``) y los campos de
+    contorno/sombra/fondo (``outline_color``, ``outline_width``, ``shadow``,
+    ``shadow_color``, ``shadow_blur``, ``shadow_x``, ``shadow_y``, ``bg_opacity``,
+    ``bg_padding``, ``bg_radius``). Los campos no indicados conservan su valor.
     """
     result = _clone(edit_project)
     clip = _require_clip(result, _require_str(params, "clip_id"))
@@ -513,13 +541,139 @@ def op_set_style(edit_project: EditProject, params: dict) -> EditProject:
             raise EditOperationError("set_style: 'position' inválida.")
         base["position"] = params["position"]
     if "preset" in params:
-        if params["preset"] not in ("classic", "tiktok"):
-            raise EditOperationError("set_style: 'preset' debe ser 'classic' o 'tiktok'.")
+        if params["preset"] not in _SUBTITLE_PRESETS:
+            raise EditOperationError(
+                f"set_style: 'preset' debe ser uno de {', '.join(_SUBTITLE_PRESETS)}."
+            )
         base["preset"] = params["preset"]
     try:
         clip.style = SubtitleStyle.model_validate(base)
     except Exception as exc:
         raise EditOperationError(f"set_style: {exc}") from exc
+    return result
+
+
+def _apply_preset_to_clip(clip: EditClip, preset: str) -> None:
+    """Aplica un preset de ``SUBTITLE_PRESETS`` a un clip de subtítulo (muta el clip).
+
+    Preserva la posición manual (``x``/``y``) y el estado de karaoke del clip, que son
+    decisiones del usuario independientes del preset estético.
+    """
+    try:
+        style = subtitle_style_from_preset(preset)
+    except ValueError as exc:
+        raise EditOperationError(f"apply_subtitle_preset: {exc}") from exc
+    if clip.style is not None:
+        style = style.model_copy(
+            update={
+                "x": clip.style.x,
+                "y": clip.style.y,
+                "karaoke": clip.style.karaoke,
+                "highlight_color": clip.style.highlight_color,
+                "highlight_scale": clip.style.highlight_scale,
+            }
+        )
+    clip.style = style
+
+
+def op_apply_subtitle_preset(edit_project: EditProject, params: dict) -> EditProject:
+    """Aplica un preset de subtítulo (set de valores de estilo) a un clip.
+
+    Params: ``clip_id`` y ``preset`` (uno de ``SUBTITLE_PRESETS``). Conserva la posición
+    manual y el karaoke del clip.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind != "subtitle":
+        raise EditOperationError(
+            f"apply_subtitle_preset: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
+        )
+    preset = _require_str(params, "preset")
+    _apply_preset_to_clip(clip, preset)
+    return result
+
+
+def op_apply_subtitle_preset_all(edit_project: EditProject, params: dict) -> EditProject:
+    """Aplica un preset a TODOS los clips de subtítulo (opcionalmente de una pista).
+
+    Params: ``preset`` (uno de ``SUBTITLE_PRESETS``) y, opcional, ``track_id`` (si se
+    indica, solo esa pista; si no, todas las pistas de subtítulo). No falla si no hay
+    clips de subtítulo (no-op).
+    """
+    result = _clone(edit_project)
+    preset = _require_str(params, "preset")
+    if preset not in SUBTITLE_PRESETS:
+        raise EditOperationError(
+            f"apply_subtitle_preset_all: preset desconocido {preset!r}."
+        )
+    track_id = params.get("track_id")
+    if track_id is not None and not isinstance(track_id, str):
+        raise EditOperationError("apply_subtitle_preset_all: 'track_id' debe ser str.")
+    if track_id is not None and result.track_by_id(track_id) is None:
+        raise EditOperationError(
+            f"apply_subtitle_preset_all: la pista {track_id!r} no existe."
+        )
+    for track in result.tracks:
+        if track.kind != "subtitle":
+            continue
+        if track_id is not None and track.id != track_id:
+            continue
+        for clip in track.clips:
+            _apply_preset_to_clip(clip, preset)
+    return result
+
+
+def op_set_format(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija el formato del proyecto (resolución + zonas seguras) en ``meta``.
+
+    Params: o bien ``format`` (clave de ``FORMAT_PRESETS``: ``16:9``/``1:1``/``tiktok``/
+    ``reels``/``shorts``), o bien valores sueltos ``width``/``height``/``aspect_ratio`` y
+    opcionalmente ``safe_top_frac``/``safe_bottom_frac``. Un preset de formato fija también
+    las zonas seguras (9:16 ⇒ márgenes; 16:9/1:1 ⇒ 0). Ajusta ``meta`` sin tocar clips.
+    """
+    result = _clone(edit_project)
+    base = result.meta.model_dump()
+
+    fmt = params.get("format")
+    if fmt is not None:
+        if fmt not in FORMAT_PRESETS:
+            raise EditOperationError(
+                f"set_format: formato desconocido {fmt!r}. "
+                f"Disponibles: {', '.join(sorted(FORMAT_PRESETS))}."
+            )
+        preset = FORMAT_PRESETS[fmt]
+        base.update(
+            {
+                "width": preset["width"],
+                "height": preset["height"],
+                "aspect_ratio": preset["aspect_ratio"],
+                "safe_top_frac": preset["safe_top_frac"],
+                "safe_bottom_frac": preset["safe_bottom_frac"],
+            }
+        )
+
+    for key in ("width", "height"):
+        if key in params:
+            value = params[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise EditOperationError(f"set_format: '{key}' debe ser un entero > 0.")
+            base[key] = int(value)
+    if "aspect_ratio" in params:
+        value = params["aspect_ratio"]
+        if not isinstance(value, str) or not value:
+            raise EditOperationError("set_format: 'aspect_ratio' (str) no puede ser vacío.")
+        base["aspect_ratio"] = value
+    for key in ("safe_top_frac", "safe_bottom_frac"):
+        if key in params:
+            value = params[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EditOperationError(f"set_format: '{key}' debe ser numérico.")
+            base[key] = float(value)
+
+    try:
+        result.meta = EditMeta.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_format: {exc}") from exc
     return result
 
 
@@ -624,6 +778,9 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "set_timing": op_set_timing,
     "set_style": op_set_style,
     "set_karaoke": op_set_karaoke,
+    "apply_subtitle_preset": op_apply_subtitle_preset,
+    "apply_subtitle_preset_all": op_apply_subtitle_preset_all,
+    "set_format": op_set_format,
 }
 
 

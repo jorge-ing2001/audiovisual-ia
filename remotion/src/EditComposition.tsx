@@ -50,7 +50,22 @@ const justifyForPosition = (
   return "flex-end";
 };
 
-const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) => {
+// Convierte "#RRGGBB" + opacidad (0..1) en una cadena rgba() para el fondo de la caja.
+const hexToRgba = (hex: string, opacity: number): string => {
+  const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex.trim());
+  if (!m) return hex;
+  const r = parseInt(m[1], 16);
+  const g = parseInt(m[2], 16);
+  const b = parseInt(m[3], 16);
+  const a = Math.max(0, Math.min(1, opacity));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+};
+
+const SubtitleOverlay: React.FC<{
+  clip: EditSubtitleClipProps;
+  safeTop?: number;
+  safeBottom?: number;
+}> = ({ clip, safeTop = 0, safeBottom = 0 }) => {
   // `frame` es local al clip porque el overlay va dentro de la <Sequence> del clip
   // (igual que VisualClip con las transiciones fade). Se usa para el karaoke.
   const frame = useCurrentFrame();
@@ -81,6 +96,49 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) =>
           ? "0 8% 22%"
           : "0 6% 6%";
 
+  // Decoración fina (contorno/sombra/fondo): solo activa cuando llegan los campos nuevos.
+  // Con los defaults (ausentes), se conserva EXACTAMENTE el aspecto heredado (regresión).
+  const hasStroke = (style.outlineWidth ?? 0) > 0;
+  const hasShadow = style.shadow === true;
+  const hasCustomBg = style.bgOpacity !== undefined && style.bgColor != null;
+
+  // textShadow: suma contorno (si aplica) y sombra (si aplica); si no, el heredado.
+  const shadowParts: string[] = [];
+  if (hasShadow) {
+    shadowParts.push(
+      `${style.shadowX ?? 0}px ${style.shadowY ?? 0}px ${style.shadowBlur ?? 0}px ${
+        style.shadowColor ?? "#000000"
+      }`,
+    );
+  }
+  let textShadow: string;
+  if (hasStroke || hasShadow) {
+    // Con contorno fino usamos WebkitTextStroke; la sombra va aparte en textShadow.
+    textShadow = shadowParts.length > 0 ? shadowParts.join(", ") : "none";
+  } else {
+    textShadow = style.outline
+      ? isTikTok
+        ? blackStroke
+        : "0 2px 6px rgba(0,0,0,0.9)"
+      : "none";
+  }
+
+  const bgStyle: React.CSSProperties = hasCustomBg
+    ? {
+        backgroundColor: hexToRgba(style.bgColor as string, style.bgOpacity ?? 1),
+        padding: `${style.bgPadding ?? 0.2}em 0.5em`,
+        borderRadius: style.bgRadius ?? 8,
+      }
+    : style.bgColor
+      ? { backgroundColor: style.bgColor, padding: "0.2em 0.5em", borderRadius: 8 }
+      : isTikTok
+        ? {}
+        : {
+            backgroundColor: "rgba(0,0,0,0.45)",
+            padding: "0.2em 0.5em",
+            borderRadius: 8,
+          };
+
   const spanStyle: React.CSSProperties = {
     fontFamily: style.fontFamily,
     fontSize: style.fontSize,
@@ -91,28 +149,24 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) =>
     maxWidth: "88%",
     transform: `translate(${style.x}px, ${style.y}px)`,
     textTransform: isTikTok ? "uppercase" : "none",
-    textShadow: style.outline
-      ? isTikTok
-        ? blackStroke
-        : "0 2px 6px rgba(0,0,0,0.9)"
-      : "none",
-    ...(style.bgColor
+    textShadow,
+    ...(hasStroke
       ? {
-          backgroundColor: style.bgColor,
-          padding: "0.2em 0.5em",
-          borderRadius: 8,
+          WebkitTextStroke: `${style.outlineWidth}px ${style.outlineColor ?? "#000000"}`,
         }
-      : isTikTok
-        ? {}
-        : {
-            backgroundColor: "rgba(0,0,0,0.45)",
-            padding: "0.2em 0.5em",
-            borderRadius: 8,
-          }),
+      : {}),
+    ...bgStyle,
   };
 
   const words = clip.words ?? [];
   const karaokeActive = style.karaoke === true && words.length > 0;
+
+  // Respeta las zonas seguras verticales del formato (9:16): reserva márgenes
+  // superior/inferior en fracción del alto para no quedar bajo la UI de la red social.
+  const safePadding = {
+    paddingTop: safeTop > 0 ? `${(safeTop * 100).toFixed(2)}%` : undefined,
+    paddingBottom: safeBottom > 0 ? `${(safeBottom * 100).toFixed(2)}%` : undefined,
+  };
 
   return (
     <AbsoluteFill
@@ -120,6 +174,7 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) =>
         alignItems: "center",
         justifyContent: justifyForPosition(style.position),
         padding: padByPosition,
+        ...safePadding,
       }}
     >
       {karaokeActive ? (
@@ -252,6 +307,8 @@ export const EditComposition: React.FC<EditProps> = ({
   subtitleClips,
   audioClips,
   muted,
+  safeTop,
+  safeBottom,
 }) => {
   const { fps } = useVideoConfig();
   const clamp1 = (n: number) => Math.max(1, Math.round(n));
@@ -280,7 +337,7 @@ export const EditComposition: React.FC<EditProps> = ({
           name={`sub:${clip.id}`}
           layout="none"
         >
-          <SubtitleOverlay clip={clip} />
+          <SubtitleOverlay clip={clip} safeTop={safeTop} safeBottom={safeBottom} />
         </Sequence>
       ))}
 

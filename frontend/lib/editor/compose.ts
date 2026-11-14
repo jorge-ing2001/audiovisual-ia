@@ -9,7 +9,12 @@
 // El backend emite EXACTAMENTE la misma forma para el export headless (con muted=true);
 // así "lo que ves en el preview = lo que exportas".
 
-import type { EditClip, EditProject, EditTrack } from "@/lib/editor/types";
+import type {
+  EditClip,
+  EditProject,
+  EditTrack,
+  SubtitlePreset,
+} from "@/lib/editor/types";
 import { AUDIO_KINDS, VISUAL_KINDS } from "@/lib/editor/types";
 
 // Forma de inputProps (espejo de remotion/src/types.ts::EditProps).
@@ -54,7 +59,19 @@ export interface EditSubtitleStyleInput {
   position: "top" | "center" | "bottom";
   x: number;
   y: number;
-  preset: "classic" | "tiktok";
+  preset: SubtitlePreset;
+  // Decoración fina: solo presente cuando difiere del default (regresión: con estilo por
+  // defecto el props no cambia respecto al Bloque 1).
+  outlineColor?: string;
+  outlineWidth?: number;
+  shadow?: boolean;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowX?: number;
+  shadowY?: number;
+  bgOpacity?: number;
+  bgPadding?: number;
+  bgRadius?: number;
   // Karaoke: solo presentes cuando karaoke=true (regresión: sin karaoke el props no cambia).
   karaoke?: boolean;
   highlightColor?: string;
@@ -102,6 +119,51 @@ export interface EditInputProps {
   subtitleClips: EditSubtitleClipInput[];
   audioClips: EditAudioClipInput[];
   muted: boolean;
+  // Zonas seguras 9:16: solo presentes cuando el formato las define (> 0). Sin ellas, el
+  // render encuadra igual que antes (regresión 16:9).
+  safeTop?: number;
+  safeBottom?: number;
+}
+
+// Defaults NEUTROS de la decoración fina (espejo de compile.py::_DECORATION_DEFAULTS).
+// Si todos coinciden, NO se emiten claves nuevas (regresión: props idéntico al Bloque 1).
+const DECORATION_DEFAULTS = {
+  outline_color: "#000000",
+  outline_width: 0,
+  shadow: false,
+  shadow_color: "#000000",
+  shadow_blur: 0,
+  shadow_x: 0,
+  shadow_y: 0,
+  bg_opacity: 1,
+  bg_padding: 0.2,
+  bg_radius: 8,
+} as const;
+
+function decorationIsDefault(s: {
+  outline_color: string;
+  outline_width: number;
+  shadow: boolean;
+  shadow_color: string;
+  shadow_blur: number;
+  shadow_x: number;
+  shadow_y: number;
+  bg_opacity: number;
+  bg_padding: number;
+  bg_radius: number;
+}): boolean {
+  return (
+    s.outline_color === DECORATION_DEFAULTS.outline_color &&
+    s.outline_width === DECORATION_DEFAULTS.outline_width &&
+    s.shadow === DECORATION_DEFAULTS.shadow &&
+    s.shadow_color === DECORATION_DEFAULTS.shadow_color &&
+    s.shadow_blur === DECORATION_DEFAULTS.shadow_blur &&
+    s.shadow_x === DECORATION_DEFAULTS.shadow_x &&
+    s.shadow_y === DECORATION_DEFAULTS.shadow_y &&
+    s.bg_opacity === DECORATION_DEFAULTS.bg_opacity &&
+    s.bg_padding === DECORATION_DEFAULTS.bg_padding &&
+    s.bg_radius === DECORATION_DEFAULTS.bg_radius
+  );
 }
 
 const round = (n: number, d = 3): number => {
@@ -159,6 +221,7 @@ function visualProps(
 function subtitleProps(clip: EditClip, fps: number): EditSubtitleClipInput {
   const s = clip.style;
   const karaokeOn = !!(s && s.karaoke);
+  const decoNonDefault = !!(s && !decorationIsDefault(s));
   const style: EditSubtitleStyleInput | null = s
     ? {
         fontFamily: s.font_family,
@@ -171,6 +234,21 @@ function subtitleProps(clip: EditClip, fps: number): EditSubtitleClipInput {
         x: s.x,
         y: s.y,
         preset: s.preset,
+        // Decoración fina SOLO cuando difiere del default (regresión: props idéntico).
+        ...(decoNonDefault
+          ? {
+              outlineColor: s.outline_color,
+              outlineWidth: s.outline_width,
+              shadow: s.shadow,
+              shadowColor: s.shadow_color,
+              shadowBlur: s.shadow_blur,
+              shadowX: s.shadow_x,
+              shadowY: s.shadow_y,
+              bgOpacity: s.bg_opacity,
+              bgPadding: s.bg_padding,
+              bgRadius: s.bg_radius,
+            }
+          : {}),
         // Karaoke SOLO cuando está activo (regresión: sin karaoke, props idéntico).
         ...(karaokeOn
           ? {
@@ -265,7 +343,7 @@ export function compileEditInputProps(
   const durationS = editProjectDuration(project);
   const durationInFrames = durationS > 0 ? framesLen(durationS, fps) : 1;
 
-  return {
+  const props: EditInputProps = {
     fps,
     width: project.meta.width,
     height: project.meta.height,
@@ -275,6 +353,15 @@ export function compileEditInputProps(
     audioClips: audio,
     muted,
   };
+  // Zonas seguras SOLO cuando el formato las define (> 0): sin ellas, props idéntico
+  // (regresión 16:9). Espejo de compile.py.
+  const safeTop = project.meta.safe_top_frac ?? 0;
+  const safeBottom = project.meta.safe_bottom_frac ?? 0;
+  if (safeTop > 0 || safeBottom > 0) {
+    props.safeTop = Math.round(safeTop * 10000) / 10000;
+    props.safeBottom = Math.round(safeBottom * 10000) / 10000;
+  }
+  return props;
 }
 
 function editProjectDuration(project: EditProject): number {

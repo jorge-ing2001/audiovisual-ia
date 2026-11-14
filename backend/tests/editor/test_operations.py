@@ -448,6 +448,146 @@ def test_set_karaoke_is_pure():
     assert project.model_dump(mode="json") == before
 
 
+# --------------------------------------------------------------------------- #
+# FEAT-004: set_style ampliado, presets y formato
+# --------------------------------------------------------------------------- #
+
+
+def test_set_style_accepts_text_decoration_fields():
+    out = apply_operation(
+        _project(),
+        "set_style",
+        {
+            "clip_id": "s0",
+            "outline_color": "#112233",
+            "outline_width": 3.0,
+            "shadow": True,
+            "shadow_blur": 6.0,
+            "shadow_y": 2.0,
+            "bg_opacity": 0.5,
+            "bg_padding": 0.3,
+            "bg_radius": 12.0,
+        },
+    )
+    _, clip = out.find_clip("s0")
+    assert clip.style.outline_color == "#112233"
+    assert clip.style.outline_width == pytest.approx(3.0)
+    assert clip.style.shadow is True
+    assert clip.style.shadow_blur == pytest.approx(6.0)
+    assert clip.style.bg_opacity == pytest.approx(0.5)
+    assert clip.style.bg_radius == pytest.approx(12.0)
+
+
+def test_set_style_accepts_extended_preset():
+    out = apply_operation(_project(), "set_style", {"clip_id": "s0", "preset": "reels"})
+    _, clip = out.find_clip("s0")
+    assert clip.style.preset == "reels"
+
+
+def test_set_style_rejects_unknown_preset():
+    with pytest.raises(EditOperationError):
+        apply_operation(_project(), "set_style", {"clip_id": "s0", "preset": "nope"})
+
+
+def test_set_style_rejects_out_of_range_bg_opacity():
+    with pytest.raises(EditOperationError):
+        apply_operation(
+            _project(), "set_style", {"clip_id": "s0", "bg_opacity": 2.0}
+        )
+
+
+def test_apply_subtitle_preset_sets_style_and_preset():
+    out = apply_operation(
+        _project(), "apply_subtitle_preset", {"clip_id": "s0", "preset": "shorts"}
+    )
+    _, clip = out.find_clip("s0")
+    assert clip.style.preset == "shorts"
+    # El preset shorts lleva contorno + sombra.
+    assert clip.style.outline_width > 0
+    assert clip.style.shadow is True
+
+
+def test_apply_subtitle_preset_preserves_position_and_karaoke():
+    base = apply_operation(
+        _project(),
+        "set_style",
+        {"clip_id": "s0", "x": 20.0, "y": -5.0, "karaoke": True},
+    )
+    out = apply_operation(
+        base, "apply_subtitle_preset", {"clip_id": "s0", "preset": "cinema"}
+    )
+    _, clip = out.find_clip("s0")
+    assert clip.style.preset == "cinema"
+    # Posición y karaoke del usuario se conservan.
+    assert clip.style.x == pytest.approx(20.0)
+    assert clip.style.y == pytest.approx(-5.0)
+    assert clip.style.karaoke is True
+
+
+def test_apply_subtitle_preset_rejects_non_subtitle():
+    with pytest.raises(EditOperationError):
+        apply_operation(
+            _project(), "apply_subtitle_preset", {"clip_id": "v0", "preset": "tiktok"}
+        )
+
+
+def test_apply_subtitle_preset_all_applies_to_every_subtitle():
+    out = apply_operation(
+        _project(), "apply_subtitle_preset_all", {"preset": "clean"}
+    )
+    for track in out.tracks:
+        if track.kind == "subtitle":
+            for clip in track.clips:
+                assert clip.style.preset == "clean"
+
+
+def test_apply_subtitle_preset_all_rejects_bad_track():
+    with pytest.raises(EditOperationError):
+        apply_operation(
+            _project(),
+            "apply_subtitle_preset_all",
+            {"preset": "clean", "track_id": "ghost"},
+        )
+
+
+def test_set_format_from_preset_sets_resolution_and_safe_zones():
+    out = apply_operation(_project(), "set_format", {"format": "reels"})
+    assert out.meta.width == 1080 and out.meta.height == 1920
+    assert out.meta.aspect_ratio == "9:16"
+    assert out.meta.safe_top_frac > 0 and out.meta.safe_bottom_frac > 0
+
+
+def test_set_format_16_9_clears_safe_zones():
+    vertical = apply_operation(_project(), "set_format", {"format": "tiktok"})
+    assert vertical.meta.safe_bottom_frac > 0
+    horizontal = apply_operation(vertical, "set_format", {"format": "16:9"})
+    assert horizontal.meta.safe_top_frac == 0.0
+    assert horizontal.meta.safe_bottom_frac == 0.0
+
+
+def test_set_format_accepts_explicit_values():
+    out = apply_operation(
+        _project(),
+        "set_format",
+        {"width": 720, "height": 1280, "aspect_ratio": "9:16", "safe_bottom_frac": 0.1},
+    )
+    assert out.meta.width == 720 and out.meta.height == 1280
+    assert out.meta.safe_bottom_frac == pytest.approx(0.1)
+
+
+def test_set_format_rejects_unknown_format():
+    with pytest.raises(EditOperationError):
+        apply_operation(_project(), "set_format", {"format": "imax"})
+
+
+def test_preset_and_format_ops_are_pure():
+    project = _project()
+    before = project.model_dump(mode="json")
+    apply_operation(project, "apply_subtitle_preset", {"clip_id": "s0", "preset": "tiktok"})
+    apply_operation(project, "set_format", {"format": "shorts"})
+    assert project.model_dump(mode="json") == before
+
+
 def test_unknown_operation_rejected():
     with pytest.raises(EditOperationError):
         apply_operation(_project(), "frobnicate", {"clip_id": "v0"})

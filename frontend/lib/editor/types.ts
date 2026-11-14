@@ -41,6 +41,14 @@ export interface ClipEffect {
   params: Record<string, unknown>;
 }
 
+export type SubtitlePreset =
+  | "classic"
+  | "tiktok"
+  | "reels"
+  | "shorts"
+  | "cinema"
+  | "clean";
+
 export interface SubtitleStyle {
   font_family: string;
   font_size: number;
@@ -51,7 +59,19 @@ export interface SubtitleStyle {
   position: "top" | "center" | "bottom";
   x: number;
   y: number;
-  preset: "classic" | "tiktok";
+  preset: SubtitlePreset;
+  // Decoración fina (contorno/sombra/fondo). Defaults NEUTROS: un documento previo sin
+  // estos campos valida igual y produce el mismo render (espejo de TextDecoration).
+  outline_color: string;
+  outline_width: number;
+  shadow: boolean;
+  shadow_color: string;
+  shadow_blur: number;
+  shadow_x: number;
+  shadow_y: number;
+  bg_opacity: number;
+  bg_padding: number;
+  bg_radius: number;
   // Karaoke (resaltado por palabra). Defaults neutros (karaoke=false): un documento
   // previo sin estos campos se trata igual que antes.
   karaoke: boolean;
@@ -111,6 +131,10 @@ export interface EditMeta {
   width: number;
   height: number;
   aspect_ratio: string;
+  // Zonas seguras verticales (fracción 0..1 del alto) de formatos 9:16. Defaults
+  // neutros (0.0): un documento 16:9 previo valida igual (espejo de EditMeta backend).
+  safe_top_frac: number;
+  safe_bottom_frac: number;
 }
 
 export interface EditProject {

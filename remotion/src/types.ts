@@ -101,6 +101,14 @@ export type EditVisualClipProps = {
   trackOrder?: number;
 };
 
+export type EditSubtitlePreset =
+  | "classic"
+  | "tiktok"
+  | "reels"
+  | "shorts"
+  | "cinema"
+  | "clean";
+
 export type EditSubtitleStyleProps = {
   fontFamily: string;
   fontSize: number;
@@ -111,7 +119,20 @@ export type EditSubtitleStyleProps = {
   position: "top" | "center" | "bottom";
   x: number;
   y: number;
-  preset: "classic" | "tiktok";
+  preset: EditSubtitlePreset;
+  // Decoración fina (contorno/sombra/fondo). Opcionales: solo llegan cuando difieren del
+  // default, de modo que un subtítulo con estilo por defecto produce el MISMO inputProps
+  // que antes del Bloque 2 (regresión). El render cae al aspecto heredado cuando faltan.
+  outlineColor?: string;
+  outlineWidth?: number;
+  shadow?: boolean;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowX?: number;
+  shadowY?: number;
+  bgOpacity?: number;
+  bgPadding?: number;
+  bgRadius?: number;
   // Karaoke (resaltado por palabra). Opcionales: solo llegan cuando karaoke=true, de
   // modo que un subtítulo sin karaoke produce el MISMO inputProps que antes.
   karaoke?: boolean;
@@ -168,6 +189,11 @@ export type EditProps = {
   // Silencia el audio del Player (true en el render de export para evitar doble
   // audio con el AudioMixer). En el preview del navegador va false.
   muted?: boolean;
+  // Zonas seguras verticales (fracción 0..1 del alto) de formatos 9:16. Opcionales:
+  // solo llegan cuando el formato las define (> 0); sin ellas, el render encuadra igual
+  // que antes (regresión 16:9). El overlay de subtítulos las respeta al posicionar.
+  safeTop?: number;
+  safeBottom?: number;
 };
 
 export const defaultEditProps: EditProps = {

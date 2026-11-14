@@ -17,7 +17,9 @@ import {
   applyEditOp,
   assetDownloadUrl,
   enqueueEditExport,
+  exportSubtitles,
   getEditProject,
+  importSubtitles,
   latestEditExport,
   listAssets,
   openEditor,
@@ -27,6 +29,7 @@ import {
   videoDownloadUrl,
   type Asset,
   type Job,
+  type SubtitleFormat,
 } from "@/lib/api";
 import {
   compileEditInputProps,
@@ -38,6 +41,7 @@ import {
   isAudioKind,
   isVisualKind,
   type EditClip,
+  type EditMeta,
   type EditProject,
   type EditTrack,
 } from "@/lib/editor/types";
@@ -254,6 +258,54 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     }
   }, [projectId]);
 
+  // Import/export de subtítulos (FEAT-003): descarga el fichero o sube uno nuevo que
+  // reemplaza/añade la pista subtitle (crea Version → undo/redo lo recoge).
+  const handleExportSubtitles = useCallback(
+    async (format: SubtitleFormat) => {
+      setBusy(true);
+      setActionError(null);
+      try {
+        await exportSubtitles(projectId, format);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError
+            ? err.message
+            : "No se pudieron exportar los subtítulos",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId],
+  );
+
+  const handleImportSubtitles = useCallback(
+    async (file: File, mode: "replace" | "append") => {
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await importSubtitles(projectId, file, mode);
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError
+            ? err.message
+            : "No se pudieron importar los subtítulos",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId],
+  );
+
+  // Cambio de formato del proyecto (9:16/16:9/1:1) vía la op pura set_format, que fija
+  // resolución + zonas seguras en meta (afecta al encuadre del preview y del export).
+  const handleSetFormat = useCallback(
+    (format: string) => void runOp("set_format", { format }),
+    [runOp],
+  );
+
   // ------------------------------- render ------------------------------- //
 
   if (loading) {
@@ -317,7 +369,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
               {durationS.toFixed(1)} s
             </span>
           </div>
-          <div className="overflow-hidden rounded-lg border border-neutral-800 bg-black">
+          <div className="relative overflow-hidden rounded-lg border border-neutral-800 bg-black">
             <Player
               ref={playerRef}
               component={EditComposition}
@@ -330,7 +382,43 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
               style={{ width: "100%" }}
               acknowledgeRemotionLicense
             />
+            {/* Guías de zona segura (formato vertical 9:16): bandas que la UI de la red
+                social puede tapar; ayudan a no colocar subtítulos/títulos debajo. */}
+            {(project.meta.safe_top_frac > 0 ||
+              project.meta.safe_bottom_frac > 0) && (
+              <div className="pointer-events-none absolute inset-0">
+                {project.meta.safe_top_frac > 0 && (
+                  <div
+                    className="absolute inset-x-0 top-0 border-b border-dashed border-amber-400/50 bg-amber-400/10"
+                    style={{ height: `${project.meta.safe_top_frac * 100}%` }}
+                  >
+                    <span className="absolute left-1 top-1 text-[9px] font-medium uppercase text-amber-300/80">
+                      zona segura
+                    </span>
+                  </div>
+                )}
+                {project.meta.safe_bottom_frac > 0 && (
+                  <div
+                    className="absolute inset-x-0 bottom-0 border-t border-dashed border-amber-400/50 bg-amber-400/10"
+                    style={{ height: `${project.meta.safe_bottom_frac * 100}%` }}
+                  >
+                    <span className="absolute bottom-1 left-1 text-[9px] font-medium uppercase text-amber-300/80">
+                      zona segura
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
+          {/* Formato de salida + import/export de subtítulos (FEAT-003/004). */}
+          <SubtitleToolbar
+            meta={project.meta}
+            busy={busy}
+            onSetFormat={handleSetFormat}
+            onExport={handleExportSubtitles}
+            onImport={handleImportSubtitles}
+          />
           <p className="text-xs text-neutral-500">
             El preview reproduce el audio del navegador sin masterizar. El export final lo
             normaliza a −14 LUFS; la posición, recorte, volumen y selección de pistas son
@@ -390,6 +478,112 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         selectedClipId={selectedClipId}
         onSelect={setSelectedClipId}
       />
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Barra de formato + import/export de subtítulos (FEAT-003/004)
+// --------------------------------------------------------------------------- //
+
+// Formato actual del proyecto a partir de meta (para el selector). Los verticales se
+// distinguen por las zonas seguras (TikTok/Reels/Shorts comparten 1080×1920).
+function currentFormatKey(meta: EditMeta): string {
+  if (meta.aspect_ratio === "1:1") return "1:1";
+  if (meta.aspect_ratio === "9:16") {
+    if (meta.safe_bottom_frac >= 0.2) return "reels";
+    if (meta.safe_bottom_frac >= 0.18) return "tiktok";
+    return "shorts";
+  }
+  return "16:9";
+}
+
+function SubtitleToolbar({
+  meta,
+  busy,
+  onSetFormat,
+  onExport,
+  onImport,
+}: {
+  meta: EditMeta;
+  busy: boolean;
+  onSetFormat: (format: string) => void;
+  onExport: (format: SubtitleFormat) => void | Promise<void>;
+  onImport: (file: File, mode: "replace" | "append") => void | Promise<void>;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importMode, setImportMode] = useState<"replace" | "append">("replace");
+  const [exportFormat, setExportFormat] = useState<SubtitleFormat>("srt");
+
+  return (
+    <div className="flex flex-wrap items-end gap-3 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+      <Field label="Formato de salida">
+        <Select
+          value={currentFormatKey(meta)}
+          onChange={(e) => onSetFormat(e.target.value)}
+          disabled={busy}
+        >
+          <option value="16:9">16:9 horizontal</option>
+          <option value="1:1">1:1 cuadrado</option>
+          <option value="tiktok">9:16 TikTok</option>
+          <option value="reels">9:16 Reels</option>
+          <option value="shorts">9:16 Shorts</option>
+        </Select>
+      </Field>
+
+      <div className="flex items-end gap-2">
+        <Field label="Exportar subtítulos">
+          <Select
+            value={exportFormat}
+            onChange={(e) => setExportFormat(e.target.value as SubtitleFormat)}
+            disabled={busy}
+          >
+            <option value="srt">SRT</option>
+            <option value="vtt">VTT</option>
+            <option value="ass">ASS</option>
+          </Select>
+        </Field>
+        <Button
+          variant="secondary"
+          loading={busy}
+          onClick={() => void onExport(exportFormat)}
+        >
+          Descargar
+        </Button>
+      </div>
+
+      <div className="flex items-end gap-2">
+        <Field label="Importar subtítulos">
+          <Select
+            value={importMode}
+            onChange={(e) =>
+              setImportMode(e.target.value as "replace" | "append")
+            }
+            disabled={busy}
+          >
+            <option value="replace">reemplazar</option>
+            <option value="append">añadir</option>
+          </Select>
+        </Field>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".srt,.vtt,.ass"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void onImport(file, importMode);
+            e.target.value = "";
+          }}
+        />
+        <Button
+          variant="secondary"
+          loading={busy}
+          onClick={() => fileRef.current?.click()}
+        >
+          Subir fichero
+        </Button>
+      </div>
     </div>
   );
 }
@@ -882,14 +1076,23 @@ function SubtitleInspector({
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Preset">
+        <Field label="Preset" hint="Aplica un estilo completo (contorno/sombra/fondo)">
           <Select
             value={style?.preset ?? "classic"}
-            onChange={(e) => setStyle({ preset: e.target.value })}
+            onChange={(e) =>
+              void onOp("apply_subtitle_preset", {
+                clip_id: clip.id,
+                preset: e.target.value,
+              })
+            }
             disabled={busy}
           >
             <option value="classic">classic</option>
             <option value="tiktok">tiktok</option>
+            <option value="reels">reels</option>
+            <option value="shorts">shorts</option>
+            <option value="cinema">cinema</option>
+            <option value="clean">clean</option>
           </Select>
         </Field>
         <Field label="Posición">
@@ -966,6 +1169,100 @@ function SubtitleInspector({
             disabled={busy}
           />
           Contorno
+        </label>
+      </div>
+
+      {/* Decoración fina: contorno/sombra/fondo (FEAT-004). Cada control llama a
+          set_style con el campo nuevo; los defaults conservan el aspecto heredado. */}
+      <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
+        <h4 className="text-xs font-semibold uppercase text-neutral-500">
+          Contorno / sombra / fondo
+        </h4>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Grosor contorno (px)">
+            <TextInput
+              type="number"
+              min="0"
+              step="0.5"
+              defaultValue={style?.outline_width ?? 0}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v >= 0)
+                  setStyle({ outline_width: v });
+              }}
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Color contorno">
+            <TextInput
+              type="text"
+              defaultValue={style?.outline_color ?? "#000000"}
+              onBlur={(e) =>
+                setStyle({ outline_color: e.target.value || "#000000" })
+              }
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Desenfoque sombra (px)">
+            <TextInput
+              type="number"
+              min="0"
+              step="1"
+              defaultValue={style?.shadow_blur ?? 0}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v >= 0) setStyle({ shadow_blur: v });
+              }}
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Color sombra">
+            <TextInput
+              type="text"
+              defaultValue={style?.shadow_color ?? "#000000"}
+              onBlur={(e) =>
+                setStyle({ shadow_color: e.target.value || "#000000" })
+              }
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Opacidad fondo (0–1)">
+            <TextInput
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              defaultValue={style?.bg_opacity ?? 1}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v >= 0 && v <= 1)
+                  setStyle({ bg_opacity: v });
+              }}
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Radio caja (px)">
+            <TextInput
+              type="number"
+              min="0"
+              step="1"
+              defaultValue={style?.bg_radius ?? 8}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v >= 0) setStyle({ bg_radius: v });
+              }}
+              disabled={busy}
+            />
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-neutral-300">
+          <input
+            type="checkbox"
+            defaultChecked={style?.shadow ?? false}
+            onChange={(e) => setStyle({ shadow: e.target.checked })}
+            disabled={busy}
+          />
+          Sombra activa
         </label>
       </div>
     </div>

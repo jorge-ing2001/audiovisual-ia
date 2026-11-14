@@ -24,6 +24,8 @@ __all__ = [
     "VisualTransform",
     "ClipTransition",
     "ClipEffect",
+    "TextDecoration",
+    "SubtitlePreset",
     "SubtitleStyle",
     "SubtitleWord",
     "EditClip",
@@ -94,8 +96,52 @@ class ClipEffect(BaseModel):
     params: dict = Field(default_factory=dict)
 
 
-class SubtitleStyle(BaseModel):
-    """Estilo de un clip de subtítulo (tipografía/posición/preset)."""
+#: Presets de subtítulo admitidos (datos en ``presets.py``; ver §6 del diseño).
+SubtitlePreset = Literal["classic", "tiktok", "reels", "shorts", "cinema", "clean"]
+
+
+class TextDecoration(BaseModel):
+    """Mixin de decoración fina de texto (contorno/sombra/fondo) para subtítulos/títulos.
+
+    Todos los campos tienen default NEUTRO: un ``SubtitleStyle`` sin estos campos valida
+    igual y, con los defaults, el render conserva EXACTAMENTE el aspecto previo (el
+    ``outline_width=0`` deja el ``textShadow`` heredado de Classic/TikTok; ``shadow=False``
+    y ``bg_opacity=1.0`` no alteran la caja por defecto). Se compone en ``SubtitleStyle``.
+    """
+
+    # Contorno fino (WebkitTextStroke). 0 = usar el textShadow heredado (compat).
+    outline_color: str = "#000000"
+    outline_width: float = 0.0
+    # Sombra (textShadow).
+    shadow: bool = False
+    shadow_color: str = "#000000"
+    shadow_blur: float = 0.0
+    shadow_x: float = 0.0
+    shadow_y: float = 0.0
+    # Fondo (caja): opacidad sobre bg_color, padding (em) y radio (px).
+    bg_opacity: float = 1.0
+    bg_padding: float = 0.2
+    bg_radius: float = 8.0
+
+    @field_validator("outline_width", "shadow_blur", "bg_padding", "bg_radius")
+    @classmethod
+    def _non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError(
+                "outline_width/shadow_blur/bg_padding/bg_radius no pueden ser negativos"
+            )
+        return value
+
+    @field_validator("bg_opacity")
+    @classmethod
+    def _opacity_range(cls, value: float) -> float:
+        if not (0.0 <= value <= 1.0):
+            raise ValueError("bg_opacity debe estar entre 0 y 1")
+        return value
+
+
+class SubtitleStyle(TextDecoration):
+    """Estilo de un clip de subtítulo (tipografía/posición/preset + decoración fina)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -108,7 +154,7 @@ class SubtitleStyle(BaseModel):
     position: Literal["top", "center", "bottom"] = "bottom"
     x: float = 0.0
     y: float = 0.0
-    preset: Literal["classic", "tiktok"] = "classic"
+    preset: SubtitlePreset = "classic"
     # Karaoke (resaltado de la palabra pronunciada). Defaults neutros: un documento
     # previo sin estos campos valida igual y produce el mismo render (sin karaoke).
     karaoke: bool = False
@@ -276,12 +322,24 @@ class EditMeta(BaseModel):
     width: int = 1920
     height: int = 1080
     aspect_ratio: str = "16:9"
+    # Zonas seguras verticales (fracción 0..1 del alto) para formatos 9:16: márgenes
+    # superior/inferior que la UI de la red social puede tapar. Defaults NEUTROS (0.0):
+    # un EditProject 16:9 previo valida igual y NO emite safeTop/safeBottom (regresión).
+    safe_top_frac: float = 0.0
+    safe_bottom_frac: float = 0.0
 
     @field_validator("fps", "width", "height")
     @classmethod
     def _positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("meta.fps/width/height deben ser > 0")
+        return value
+
+    @field_validator("safe_top_frac", "safe_bottom_frac")
+    @classmethod
+    def _safe_frac_range(cls, value: float) -> float:
+        if not (0.0 <= value < 1.0):
+            raise ValueError("meta.safe_*_frac debe estar en [0, 1)")
         return value
 
 

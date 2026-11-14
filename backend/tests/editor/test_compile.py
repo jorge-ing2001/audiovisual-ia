@@ -296,6 +296,117 @@ def test_compile_regression_no_karaoke_props_unchanged():
             }
 
 
+def test_compile_emits_decoration_fields_when_non_default():
+    """Con contorno/sombra/fondo no-default, el estilo propaga los campos nuevos."""
+    subs = EditTrack(
+        id="track_subtitle",
+        kind="subtitle",
+        order=0,
+        clips=[
+            EditClip(
+                id="s0",
+                track_id="track_subtitle",
+                kind="subtitle",
+                start_s=0.0,
+                duration_s=1.0,
+                text="deco",
+                style=SubtitleStyle(
+                    outline_color="#112233",
+                    outline_width=3.0,
+                    shadow=True,
+                    shadow_blur=6.0,
+                    shadow_y=2.0,
+                    bg_opacity=0.5,
+                    bg_padding=0.3,
+                    bg_radius=12.0,
+                ),
+            )
+        ],
+    )
+    project = EditProject(project_id=1, meta=EditMeta(fps=30), tracks=[subs])
+    props = compile_remotion_props(project)
+    style = props["subtitleClips"][0]["style"]
+    assert style["outlineColor"] == "#112233"
+    assert style["outlineWidth"] == pytest.approx(3.0)
+    assert style["shadow"] is True
+    assert style["shadowBlur"] == pytest.approx(6.0)
+    assert style["bgOpacity"] == pytest.approx(0.5)
+    assert style["bgRadius"] == pytest.approx(12.0)
+
+
+def test_compile_omits_decoration_when_default():
+    """Estilo con decoración por defecto ⇒ no se emiten claves nuevas (regresión)."""
+    subs = EditTrack(
+        id="track_subtitle",
+        kind="subtitle",
+        order=0,
+        clips=[
+            EditClip(
+                id="s0",
+                track_id="track_subtitle",
+                kind="subtitle",
+                start_s=0.0,
+                duration_s=1.0,
+                text="plano",
+                style=SubtitleStyle(),
+            )
+        ],
+    )
+    project = EditProject(project_id=1, meta=EditMeta(fps=30), tracks=[subs])
+    style = compile_remotion_props(project)["subtitleClips"][0]["style"]
+    assert set(style) == {
+        "fontFamily",
+        "fontSize",
+        "color",
+        "bgColor",
+        "bold",
+        "outline",
+        "position",
+        "x",
+        "y",
+        "preset",
+    }
+
+
+def test_compile_emits_safe_zones_only_when_present():
+    project = _project()
+    # Sin zonas seguras (16:9 por defecto): NO hay safeTop/safeBottom (regresión).
+    props = compile_remotion_props(project, lambda aid: str(aid))
+    assert "safeTop" not in props
+    assert "safeBottom" not in props
+
+    # Con zonas seguras (9:16): se emiten en el inputProps global.
+    project.meta.safe_top_frac = 0.12
+    project.meta.safe_bottom_frac = 0.18
+    props2 = compile_remotion_props(project, lambda aid: str(aid))
+    assert props2["safeTop"] == pytest.approx(0.12)
+    assert props2["safeBottom"] == pytest.approx(0.18)
+
+
+def test_compile_regression_default_style_props_unchanged():
+    """REGRESIÓN FEAT-004: el proyecto base (estilo por defecto en todo) no gana claves.
+
+    Sin karaoke, sin decoración fina y sin zonas seguras, el inputProps es el de antes del
+    Bloque 2: subtítulo solo con las 10 claves clásicas y sin safeTop/safeBottom global."""
+    props = compile_remotion_props(_project(), lambda aid: f"asset/{aid}.png")
+    assert "safeTop" not in props and "safeBottom" not in props
+    for sub in props["subtitleClips"]:
+        if sub["style"] is None:
+            continue
+        assert set(sub["style"]) == {
+            "fontFamily",
+            "fontSize",
+            "color",
+            "bgColor",
+            "bold",
+            "outline",
+            "position",
+            "x",
+            "y",
+            "preset",
+        }
+
+
 def test_disabled_clip_excluded_from_both_outputs():
     project = _project()
     # Deshabilita el clip de voz.
