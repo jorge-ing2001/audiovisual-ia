@@ -51,6 +51,9 @@ const justifyForPosition = (
 };
 
 const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) => {
+  // `frame` es local al clip porque el overlay va dentro de la <Sequence> del clip
+  // (igual que VisualClip con las transiciones fade). Se usa para el karaoke.
+  const frame = useCurrentFrame();
   const style: EditSubtitleStyleProps = {
     fontFamily: "Inter, sans-serif",
     fontSize: 48,
@@ -62,6 +65,9 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) =>
     x: 0,
     y: 0,
     preset: "classic",
+    karaoke: false,
+    highlightColor: "#FFE34D",
+    highlightScale: 1,
     ...(clip.style ?? {}),
   };
 
@@ -105,6 +111,9 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) =>
           }),
   };
 
+  const words = clip.words ?? [];
+  const karaokeActive = style.karaoke === true && words.length > 0;
+
   return (
     <AbsoluteFill
       style={{
@@ -113,7 +122,30 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipProps }> = ({ clip }) =>
         padding: padByPosition,
       }}
     >
-      <span style={spanStyle}>{clip.text}</span>
+      {karaokeActive ? (
+        <span style={spanStyle}>
+          {words.map((word, i) => {
+            const active =
+              frame >= word.from && frame < word.from + word.durationInFrames;
+            const wordStyle: React.CSSProperties = active
+              ? {
+                  color: style.highlightColor,
+                  display: "inline-block",
+                  transform: `scale(${style.highlightScale ?? 1})`,
+                  transformOrigin: "center",
+                }
+              : { display: "inline-block" };
+            return (
+              <React.Fragment key={`${word.text}-${i}`}>
+                <span style={wordStyle}>{word.text}</span>
+                {i < words.length - 1 ? " " : null}
+              </React.Fragment>
+            );
+          })}
+        </span>
+      ) : (
+        <span style={spanStyle}>{clip.text}</span>
+      )}
     </AbsoluteFill>
   );
 };

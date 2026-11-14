@@ -25,6 +25,7 @@ __all__ = [
     "ClipTransition",
     "ClipEffect",
     "SubtitleStyle",
+    "SubtitleWord",
     "EditClip",
     "EditTrack",
     "EditMeta",
@@ -108,12 +109,45 @@ class SubtitleStyle(BaseModel):
     x: float = 0.0
     y: float = 0.0
     preset: Literal["classic", "tiktok"] = "classic"
+    # Karaoke (resaltado de la palabra pronunciada). Defaults neutros: un documento
+    # previo sin estos campos valida igual y produce el mismo render (sin karaoke).
+    karaoke: bool = False
+    highlight_color: str = "#FFE34D"
+    highlight_scale: float = 1.0
 
     @field_validator("font_size")
     @classmethod
     def _font_size_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("style.font_size debe ser > 0")
+        return value
+
+    @field_validator("highlight_scale")
+    @classmethod
+    def _highlight_scale_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("style.highlight_scale debe ser > 0")
+        return value
+
+
+class SubtitleWord(BaseModel):
+    """Una palabra con tiempos RELATIVOS al inicio del clip de subtítulo (karaoke).
+
+    Se rellena desde ``palabras.json`` (``[{text,startMs,endMs}]``) al convertir el
+    timeline (ver ``convert.py``). Lista vacía ⇒ sin karaoke por palabra.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    start_s: float = 0.0
+    end_s: float = 0.0
+
+    @field_validator("start_s", "end_s")
+    @classmethod
+    def _non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("word.start_s/end_s no pueden ser negativos")
         return value
 
 
@@ -153,6 +187,7 @@ class EditClip(BaseModel):
     # Subtitle
     text: str | None = None
     style: SubtitleStyle | None = None
+    words: list[SubtitleWord] = Field(default_factory=list)
 
     @field_validator("start_s")
     @classmethod

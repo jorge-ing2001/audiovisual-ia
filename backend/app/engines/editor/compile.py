@@ -86,6 +86,7 @@ def _visual_clip_props(
 def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
     style = clip.style
     style_props = None
+    karaoke_on = style is not None and style.karaoke
     if style is not None:
         style_props = {
             "fontFamily": style.font_family,
@@ -99,7 +100,13 @@ def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
             "y": style.y,
             "preset": style.preset,
         }
-    return {
+        # Campos de karaoke SOLO cuando está activo: un EditProject sin karaoke produce
+        # exactamente el mismo inputProps que antes (invariante de regresión §10).
+        if karaoke_on:
+            style_props["karaoke"] = True
+            style_props["highlightColor"] = style.highlight_color
+            style_props["highlightScale"] = style.highlight_scale
+    props = {
         "id": clip.id,
         "from": _frame_at(clip.start_s, fps),
         "durationInFrames": _frames_len(clip.duration_s, fps),
@@ -108,6 +115,19 @@ def _subtitle_clip_props(clip: EditClip, fps: int) -> dict:
         "text": clip.text or "",
         "style": style_props,
     }
+    # Array de palabras (frames relativos al clip) SOLO si hay karaoke activo y palabras.
+    if karaoke_on and clip.words:
+        props["words"] = [
+            {
+                "text": w.text,
+                "from": _frame_at(w.start_s, fps),
+                "durationInFrames": _frames_len(max(0.0, w.end_s - w.start_s), fps),
+                "startS": round(w.start_s, 3),
+                "durationS": round(max(0.0, w.end_s - w.start_s), 3),
+            }
+            for w in clip.words
+        ]
+    return props
 
 
 def _audio_clip_props(clip: EditClip, track: EditTrack, fps: int, resolve_src) -> dict:

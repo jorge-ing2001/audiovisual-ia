@@ -12,6 +12,7 @@ from app.engines.editor.model import (
     EditProject,
     EditTrack,
     SubtitleStyle,
+    SubtitleWord,
     VisualTransform,
 )
 
@@ -210,6 +211,89 @@ def test_sync_visual_audio_subtitle_share_timeline():
     assert visual_second["startS"] == pytest.approx(2.0)
     assert sub["startS"] == pytest.approx(2.0)
     assert audio[0].delay_s == pytest.approx(2.0)
+
+
+def _karaoke_project() -> EditProject:
+    subs = EditTrack(
+        id="track_subtitle",
+        kind="subtitle",
+        order=0,
+        clips=[
+            EditClip(
+                id="s0",
+                track_id="track_subtitle",
+                kind="subtitle",
+                start_s=1.0,
+                duration_s=1.0,
+                text="hola mundo",
+                style=SubtitleStyle(
+                    karaoke=True,
+                    highlight_color="#00FF00",
+                    highlight_scale=1.2,
+                ),
+                words=[
+                    SubtitleWord(text="hola", start_s=0.0, end_s=0.5),
+                    SubtitleWord(text="mundo", start_s=0.5, end_s=1.0),
+                ],
+            )
+        ],
+    )
+    return EditProject(project_id=1, meta=EditMeta(fps=30), tracks=[subs])
+
+
+def test_compile_emits_words_and_karaoke_style_when_enabled():
+    props = compile_remotion_props(_karaoke_project())
+    sub = props["subtitleClips"][0]
+    # El estilo propaga karaoke/highlight_*.
+    assert sub["style"]["karaoke"] is True
+    assert sub["style"]["highlightColor"] == "#00FF00"
+    assert sub["style"]["highlightScale"] == pytest.approx(1.2)
+    # El array words lleva frames RELATIVOS al clip.
+    words = sub["words"]
+    assert [w["text"] for w in words] == ["hola", "mundo"]
+    assert words[0]["from"] == 0 and words[0]["durationInFrames"] == 15  # 0.5s * 30
+    assert words[1]["from"] == 15 and words[1]["durationInFrames"] == 15
+    assert words[0]["startS"] == pytest.approx(0.0)
+    assert words[1]["startS"] == pytest.approx(0.5)
+
+
+def test_compile_omits_words_when_karaoke_disabled_even_with_words():
+    """Si karaoke=False, no se emiten words ni campos de karaoke (aunque haya words)."""
+    project = _karaoke_project()
+    project.tracks[0].clips[0].style.karaoke = False
+    props = compile_remotion_props(project)
+    sub = props["subtitleClips"][0]
+    assert "words" not in sub
+    assert "karaoke" not in sub["style"]
+    assert "highlightColor" not in sub["style"]
+    assert "highlightScale" not in sub["style"]
+
+
+def test_compile_regression_no_karaoke_props_unchanged():
+    """REGRESIÓN: un EditProject sin karaoke produce EXACTAMENTE el mismo inputProps.
+
+    El proyecto base (_project) no usa karaoke; su inputProps no debe contener claves
+    nuevas (words/karaoke/highlight*) en ningún subtítulo ni cambiar el resto."""
+    props = compile_remotion_props(_project(), lambda aid: f"asset/{aid}.png")
+    for sub in props["subtitleClips"]:
+        assert "words" not in sub
+        if sub["style"] is not None:
+            assert "karaoke" not in sub["style"]
+            assert "highlightColor" not in sub["style"]
+            assert "highlightScale" not in sub["style"]
+            # Las claves de estilo son exactamente las previas al Bloque 2.
+            assert set(sub["style"]) == {
+                "fontFamily",
+                "fontSize",
+                "color",
+                "bgColor",
+                "bold",
+                "outline",
+                "position",
+                "x",
+                "y",
+                "preset",
+            }
 
 
 def test_disabled_clip_excluded_from_both_outputs():

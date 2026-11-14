@@ -392,6 +392,62 @@ def test_merge_rejects_clips_in_different_tracks():
         apply_operation(_project(), "merge", {"clip_id": "v0", "other_id": "a0"})
 
 
+def test_set_karaoke_enables_and_configures():
+    out = apply_operation(
+        _project(),
+        "set_karaoke",
+        {
+            "clip_id": "s0",
+            "enabled": True,
+            "highlight_color": "#00FF00",
+            "highlight_scale": 1.25,
+        },
+    )
+    _, clip = out.find_clip("s0")
+    assert clip.style.karaoke is True
+    assert clip.style.highlight_color == "#00FF00"
+    assert clip.style.highlight_scale == pytest.approx(1.25)
+
+
+def test_set_karaoke_disables_keeps_other_style():
+    enabled = apply_operation(
+        _project(), "set_karaoke", {"clip_id": "s0", "enabled": True}
+    )
+    disabled = apply_operation(
+        enabled, "set_karaoke", {"clip_id": "s0", "enabled": False}
+    )
+    _, clip = disabled.find_clip("s0")
+    assert clip.style.karaoke is False
+    # El color por defecto se conserva (default neutro).
+    assert clip.style.highlight_color == "#FFE34D"
+
+
+def test_set_karaoke_rejects_non_subtitle_clip():
+    with pytest.raises(EditOperationError):
+        apply_operation(_project(), "set_karaoke", {"clip_id": "v0", "enabled": True})
+
+
+def test_set_karaoke_requires_enabled_bool():
+    with pytest.raises(EditOperationError):
+        apply_operation(_project(), "set_karaoke", {"clip_id": "s0"})
+
+
+def test_set_karaoke_rejects_non_positive_scale():
+    with pytest.raises(EditOperationError):
+        apply_operation(
+            _project(),
+            "set_karaoke",
+            {"clip_id": "s0", "enabled": True, "highlight_scale": 0.0},
+        )
+
+
+def test_set_karaoke_is_pure():
+    project = _project()
+    before = project.model_dump(mode="json")
+    apply_operation(project, "set_karaoke", {"clip_id": "s0", "enabled": True})
+    assert project.model_dump(mode="json") == before
+
+
 def test_unknown_operation_rejected():
     with pytest.raises(EditOperationError):
         apply_operation(_project(), "frobnicate", {"clip_id": "v0"})

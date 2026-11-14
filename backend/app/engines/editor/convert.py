@@ -21,6 +21,7 @@ Decisiones (preservan el comportamiento actual del render como punto de partida)
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.engines.editor.model import (
@@ -29,6 +30,7 @@ from app.engines.editor.model import (
     EditProject,
     EditTrack,
     SubtitleStyle,
+    SubtitleWord,
     VisualTransform,
 )
 from app.engines.render.timeline import Timeline
@@ -39,6 +41,73 @@ __all__ = ["timeline_to_edit_project"]
 # Ganancia de fondo por defecto (coincide con ``RenderEngine._audio_tracks``).
 MUSIC_DEFAULT_GAIN = 0.3
 SFX_DEFAULT_GAIN = 0.5
+
+
+def _load_global_words(assets: list[Asset]) -> list[dict]:
+    """Lee ``palabras.json`` (``[{text,startMs,endMs}]``) del ``Asset(kind='srt')``.
+
+    Los tiempos de ``palabras.json`` son GLOBALES (acumulados por escena), igual que los
+    cues del ``.srt`` del proyecto. Devuelve la lista cruda (ms) o ``[]`` si no hay srt
+    con ``words_json`` resoluble. Función de IO acotada: solo lee el fichero apuntado por
+    ``meta['words_json']``; el reparto por clip lo hace ``_clip_words`` (puro)."""
+    srt = next(
+        (
+            a
+            for a in sorted(assets, key=lambda a: a.id, reverse=True)
+            if a.kind == "srt"
+        ),
+        None,
+    )
+    if srt is None:
+        return []
+    words_json = (srt.meta or {}).get("words_json")
+    if not words_json:
+        return []
+    path = Path(words_json)
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [w for w in data if isinstance(w, dict) and "text" in w]
+
+
+def _clip_words(
+    global_words: list[dict], clip_start_s: float, clip_end_s: float
+) -> list[SubtitleWord]:
+    """Selecciona las palabras del cue ``[clip_start_s, clip_end_s]`` (tiempos globales)
+    y las convierte a tiempos RELATIVOS al clip (``start_s = startMs/1000 - clip_start_s``).
+
+    Una palabra pertenece al cue si su punto medio cae dentro de la ventana del clip (así
+    palabras que solapan el borde se asignan a un único cue de forma determinista). Función
+    pura sobre números: testeable sin IO."""
+    out: list[SubtitleWord] = []
+    for w in global_words:
+        text = str(w.get("text", "")).strip()
+        if not text:
+            continue
+        start_ms = w.get("startMs")
+        end_ms = w.get("endMs")
+        if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
+            continue
+        word_start = float(start_ms) / 1000.0
+        word_end = float(end_ms) / 1000.0
+        mid = (word_start + word_end) / 2.0
+        if not (clip_start_s <= mid < clip_end_s):
+            continue
+        rel_start = max(0.0, word_start - clip_start_s)
+        rel_end = max(rel_start, word_end - clip_start_s)
+        out.append(
+            SubtitleWord(
+                text=text,
+                start_s=round(rel_start, 3),
+                end_s=round(rel_end, 3),
+            )
+        )
+    return out
 
 
 def _timeline_scene_db_id(timeline_scene_id: str) -> int | None:
@@ -88,6 +157,7 @@ def timeline_to_edit_project(
     )
 
     voice_map = _voice_by_scene(assets)
+    global_words = _load_global_words(assets)
 
     offset_s = 0.0
     clip_index = 0
@@ -151,18 +221,22 @@ def timeline_to_edit_project(
             cue_duration = float(cue.end_s) - float(cue.start_s)
             if cue_duration <= 0:
                 continue
+            clip_start = round(offset_s + float(cue.start_s), 3)
+            clip_end = clip_start + round(cue_duration, 3)
+            words = _clip_words(global_words, clip_start, clip_end)
             subtitle_track.clips.append(
                 EditClip(
                     id=f"clip_sub_{clip_index}_{cue_index}",
                     track_id=subtitle_track.id,
                     kind="subtitle",
-                    start_s=round(offset_s + float(cue.start_s), 3),
+                    start_s=clip_start,
                     duration_s=round(cue_duration, 3),
                     text=cue.text,
                     style=SubtitleStyle(
                         preset=preset,
                         position="bottom",
                     ),
+                    words=words,
                 )
             )
 

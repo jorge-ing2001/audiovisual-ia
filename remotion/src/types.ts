@@ -112,6 +112,21 @@ export type EditSubtitleStyleProps = {
   x: number;
   y: number;
   preset: "classic" | "tiktok";
+  // Karaoke (resaltado por palabra). Opcionales: solo llegan cuando karaoke=true, de
+  // modo que un subtítulo sin karaoke produce el MISMO inputProps que antes.
+  karaoke?: boolean;
+  highlightColor?: string;
+  highlightScale?: number;
+};
+
+// Una palabra del clip de subtítulo con su ventana en frames RELATIVOS al clip (espejo
+// de compile_remotion_props). Solo se emite cuando el clip tiene karaoke activo y words.
+export type EditSubtitleWordProps = {
+  text: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
 };
 
 export type EditSubtitleClipProps = {
@@ -122,6 +137,7 @@ export type EditSubtitleClipProps = {
   durationS: number;
   text: string;
   style?: EditSubtitleStyleProps | null;
+  words?: EditSubtitleWordProps[];
 };
 
 // Clip de audio para el PREVIEW del Player (voz/música/SFX). El compilador de

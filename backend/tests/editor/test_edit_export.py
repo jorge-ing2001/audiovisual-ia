@@ -253,3 +253,127 @@ def test_compose_edit_full_render(render_env, db_ready, tmp_path):
         # El Asset de vídeo nuevo es descargable por GET /projects/{id}/video.
         asset = session.get(Asset, result.asset_id)
         assert asset is not None and asset.kind == "video"
+
+
+# --------------------------------------------------------------------------- #
+# 3. Export con subtítulo KARAOKE (FEAT-002): slice vertical end-to-end
+# --------------------------------------------------------------------------- #
+
+
+def test_compose_edit_karaoke_render(render_env, db_ready, tmp_path):
+    """EditProject con subtítulo karaoke (palabras) + imagen placeholder + voz WAV.
+
+    Ejercita la cadena completa modelo→op→compilador→composición Remotion→export y
+    verifica con ffprobe que el MP4 tiene vídeo+audio y duración coherente. Si Remotion
+    no renderiza (sin Chromium), se SALTA con razón (nunca simula el MP4)."""
+    from app.engines.editor.convert import timeline_to_edit_project
+    from app.engines.editor.model import SubtitleWord
+    from app.engines.editor.operations import apply_operation
+    from app.engines.editor.store import save_edit_project
+    from app.engines.render import RenderEngine, RenderUnavailable, TimelineBuilder
+    from app.engines.render.engine import FfmpegError
+    from app.models.entities import Asset, Project, Scene
+    from app.providers.image.placeholder import PlaceholderProvider
+    from app.storage.db import session_scope
+    from app.storage.media import ensure_project_workspace
+
+    settings = get_settings()
+
+    with session_scope() as session:
+        project = Project(name="edit-karaoke", prompt="olas contra el faro", aspect_ratio="16:9")
+        session.add(project)
+        session.flush()
+        scene = Scene(
+            project_id=project.id,
+            order=0,
+            narration_text="Las olas golpean el faro.",
+            visual_prompt="olas contra el faro",
+            duration_s=2.0,
+        )
+        session.add(scene)
+        session.flush()
+
+        img_dir = ensure_project_workspace(project.id) / "images"
+        img = PlaceholderProvider().image_for(
+            "olas contra el faro", aspect="16:9", out_dir=str(img_dir)
+        )
+        voice = _write_tone(tmp_path / "voice.wav", seconds=2.0)
+        session.add_all(
+            [
+                Asset(
+                    project_id=project.id,
+                    scene_id=scene.id,
+                    kind="image",
+                    path=img.path,
+                    provider="placeholder",
+                ),
+                Asset(
+                    project_id=project.id,
+                    scene_id=scene.id,
+                    kind="voice",
+                    path=voice,
+                    provider="kokoro",
+                    meta={"duration_s": 2.0},
+                ),
+            ]
+        )
+        session.commit()
+        session.refresh(project)
+
+        timeline = TimelineBuilder().build(project, session)
+        edit_project = timeline_to_edit_project(timeline, project, list(project.assets))
+
+        # Adjunta palabras y activa karaoke en el primer clip de subtítulo (si existe);
+        # si el timeline no produjo subtítulos, crea uno mínimo para el slice.
+        sub_track = next(t for t in edit_project.tracks if t.kind == "subtitle")
+        if not sub_track.clips:
+            from app.engines.editor.model import EditClip
+
+            sub_track.clips.append(
+                EditClip(
+                    id="clip_sub_manual",
+                    track_id=sub_track.id,
+                    kind="subtitle",
+                    start_s=0.0,
+                    duration_s=2.0,
+                    text="olas faro",
+                )
+            )
+        clip = sub_track.clips[0]
+        clip.words = [
+            SubtitleWord(text="olas", start_s=0.0, end_s=1.0),
+            SubtitleWord(text="faro", start_s=1.0, end_s=2.0),
+        ]
+        edit_project = apply_operation(
+            edit_project,
+            "set_karaoke",
+            {"clip_id": clip.id, "enabled": True, "highlight_color": "#FFE34D"},
+        )
+
+        # El compilador debe emitir words para el clip karaoke (paridad preview/export).
+        from app.engines.editor.compile import compile_remotion_props
+
+        props = compile_remotion_props(edit_project, muted=True)
+        karaoke_subs = [s for s in props["subtitleClips"] if s.get("words")]
+        assert karaoke_subs, "El compilador no emitió words para el subtítulo karaoke."
+
+        save_edit_project(project, session, edit_project)
+
+        try:
+            result = RenderEngine().compose_edit(project, edit_project, session)
+        except RenderUnavailable as exc:
+            pytest.skip(
+                "Composición Remotion 'Edit' no disponible en este entorno "
+                f"(necesita Chromium headless): {exc}"
+            )
+        except FfmpegError as exc:  # pragma: no cover - solo si ffmpeg falla el mux
+            pytest.fail(f"El mux de FFmpeg falló: {exc}")
+
+        video = Path(result.video_path)
+        assert video.is_file() and video.stat().st_size > 0
+        streams = _probe_streams(settings.ffprobe_bin, str(video))
+        assert "video" in streams
+        assert "audio" in streams
+        duration = _probe_duration(settings.ffprobe_bin, str(video))
+        assert abs(duration - 2.0) <= 0.5
+        assert result.meta.get("source") == "edit_export"

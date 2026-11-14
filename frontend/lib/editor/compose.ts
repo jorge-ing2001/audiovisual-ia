@@ -55,6 +55,19 @@ export interface EditSubtitleStyleInput {
   x: number;
   y: number;
   preset: "classic" | "tiktok";
+  // Karaoke: solo presentes cuando karaoke=true (regresión: sin karaoke el props no cambia).
+  karaoke?: boolean;
+  highlightColor?: string;
+  highlightScale?: number;
+}
+
+// Palabra del clip de subtítulo con ventana en frames RELATIVOS al clip (karaoke).
+export interface EditSubtitleWordInput {
+  text: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
 }
 
 export interface EditSubtitleClipInput {
@@ -65,6 +78,7 @@ export interface EditSubtitleClipInput {
   durationS: number;
   text: string;
   style: EditSubtitleStyleInput | null;
+  words?: EditSubtitleWordInput[];
 }
 
 export interface EditAudioClipInput {
@@ -144,28 +158,51 @@ function visualProps(
 
 function subtitleProps(clip: EditClip, fps: number): EditSubtitleClipInput {
   const s = clip.style;
-  return {
+  const karaokeOn = !!(s && s.karaoke);
+  const style: EditSubtitleStyleInput | null = s
+    ? {
+        fontFamily: s.font_family,
+        fontSize: s.font_size,
+        color: s.color,
+        bgColor: s.bg_color,
+        bold: s.bold,
+        outline: s.outline,
+        position: s.position,
+        x: s.x,
+        y: s.y,
+        preset: s.preset,
+        // Karaoke SOLO cuando está activo (regresión: sin karaoke, props idéntico).
+        ...(karaokeOn
+          ? {
+              karaoke: true,
+              highlightColor: s.highlight_color,
+              highlightScale: s.highlight_scale,
+            }
+          : {}),
+      }
+    : null;
+
+  const props: EditSubtitleClipInput = {
     id: clip.id,
     from: frameAt(clip.start_s, fps),
     durationInFrames: framesLen(clip.duration_s, fps),
     startS: round(clip.start_s),
     durationS: round(clip.duration_s),
     text: clip.text ?? "",
-    style: s
-      ? {
-          fontFamily: s.font_family,
-          fontSize: s.font_size,
-          color: s.color,
-          bgColor: s.bg_color,
-          bold: s.bold,
-          outline: s.outline,
-          position: s.position,
-          x: s.x,
-          y: s.y,
-          preset: s.preset,
-        }
-      : null,
+    style,
   };
+
+  // Array de palabras (frames relativos al clip) SOLO si hay karaoke activo y palabras.
+  if (karaokeOn && clip.words && clip.words.length > 0) {
+    props.words = clip.words.map((w) => ({
+      text: w.text,
+      from: frameAt(w.start_s, fps),
+      durationInFrames: framesLen(Math.max(0, w.end_s - w.start_s), fps),
+      startS: round(w.start_s),
+      durationS: round(Math.max(0, w.end_s - w.start_s)),
+    }));
+  }
+  return props;
 }
 
 function audioProps(

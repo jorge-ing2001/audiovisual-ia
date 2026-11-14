@@ -53,6 +53,7 @@ __all__ = [
     "op_set_text",
     "op_set_timing",
     "op_set_style",
+    "op_set_karaoke",
     "op_merge",
 ]
 
@@ -522,6 +523,45 @@ def op_set_style(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+def op_set_karaoke(edit_project: EditProject, params: dict) -> EditProject:
+    """Activa/configura el karaoke (resaltado por palabra) de un clip de subtítulo.
+
+    Params: ``clip_id``, ``enabled`` (bool) y, opcionales, ``highlight_color`` (str) y
+    ``highlight_scale`` (número > 0). El resaltado por palabra usa el ``words`` del clip
+    (rellenado desde ``palabras.json`` al convertir); si el clip no tiene palabras, el
+    render cae al resaltado por reparto uniforme. Rechaza clips no-subtítulo.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind != "subtitle":
+        raise EditOperationError(
+            f"set_karaoke: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
+        )
+    enabled = params.get("enabled")
+    if not isinstance(enabled, bool):
+        raise EditOperationError("set_karaoke: 'enabled' (bool) es obligatorio.")
+
+    base = (clip.style or SubtitleStyle()).model_dump()
+    base["karaoke"] = enabled
+    if "highlight_color" in params:
+        value = params["highlight_color"]
+        if not isinstance(value, str) or not value:
+            raise EditOperationError("set_karaoke: 'highlight_color' (str) no puede ser vacío.")
+        base["highlight_color"] = value
+    if "highlight_scale" in params:
+        value = params["highlight_scale"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise EditOperationError("set_karaoke: 'highlight_scale' debe ser numérico.")
+        if value <= 0:
+            raise EditOperationError("set_karaoke: 'highlight_scale' debe ser > 0.")
+        base["highlight_scale"] = float(value)
+    try:
+        clip.style = SubtitleStyle.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_karaoke: {exc}") from exc
+    return result
+
+
 def op_merge(edit_project: EditProject, params: dict) -> EditProject:
     """Une dos clips ADYACENTES de la misma pista en uno solo (inverso de ``split``).
 
@@ -583,6 +623,7 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "set_text": op_set_text,
     "set_timing": op_set_timing,
     "set_style": op_set_style,
+    "set_karaoke": op_set_karaoke,
 }
 
 

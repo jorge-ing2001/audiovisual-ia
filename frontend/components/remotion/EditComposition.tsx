@@ -46,6 +46,9 @@ const DEFAULT_SUBTITLE_STYLE: EditSubtitleStyleInput = {
   x: 0,
   y: 0,
   preset: "classic",
+  karaoke: false,
+  highlightColor: "#FFE34D",
+  highlightScale: 1,
 };
 
 const justifyForPosition = (
@@ -57,6 +60,9 @@ const justifyForPosition = (
 };
 
 const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipInput }> = ({ clip }) => {
+  // `frame` es local al clip porque el overlay va dentro de la <Sequence> del clip
+  // (igual que VisualClip con las transiciones fade). Se usa para el karaoke.
+  const frame = useCurrentFrame();
   const style: EditSubtitleStyleInput = {
     ...DEFAULT_SUBTITLE_STYLE,
     ...(clip.style ?? {}),
@@ -97,6 +103,9 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipInput }> = ({ clip }) =>
           }),
   };
 
+  const words = clip.words ?? [];
+  const karaokeActive = style.karaoke === true && words.length > 0;
+
   return (
     <AbsoluteFill
       style={{
@@ -105,7 +114,30 @@ const SubtitleOverlay: React.FC<{ clip: EditSubtitleClipInput }> = ({ clip }) =>
         padding: padByPosition,
       }}
     >
-      <span style={spanStyle}>{clip.text}</span>
+      {karaokeActive ? (
+        <span style={spanStyle}>
+          {words.map((word, i) => {
+            const active =
+              frame >= word.from && frame < word.from + word.durationInFrames;
+            const wordStyle: React.CSSProperties = active
+              ? {
+                  color: style.highlightColor,
+                  display: "inline-block",
+                  transform: `scale(${style.highlightScale ?? 1})`,
+                  transformOrigin: "center",
+                }
+              : { display: "inline-block" };
+            return (
+              <React.Fragment key={`${word.text}-${i}`}>
+                <span style={wordStyle}>{word.text}</span>
+                {i < words.length - 1 ? " " : null}
+              </React.Fragment>
+            );
+          })}
+        </span>
+      ) : (
+        <span style={spanStyle}>{clip.text}</span>
+      )}
     </AbsoluteFill>
   );
 };

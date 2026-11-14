@@ -52,6 +52,18 @@ export interface SubtitleStyle {
   x: number;
   y: number;
   preset: "classic" | "tiktok";
+  // Karaoke (resaltado por palabra). Defaults neutros (karaoke=false): un documento
+  // previo sin estos campos se trata igual que antes.
+  karaoke: boolean;
+  highlight_color: string;
+  highlight_scale: number;
+}
+
+// Palabra con tiempos RELATIVOS al inicio del clip de subtítulo (karaoke).
+export interface SubtitleWord {
+  text: string;
+  start_s: number;
+  end_s: number;
 }
 
 export interface EditClip {
@@ -80,6 +92,7 @@ export interface EditClip {
   // Subtitle
   text: string | null;
   style: SubtitleStyle | null;
+  words: SubtitleWord[];
 }
 
 export interface EditTrack {
