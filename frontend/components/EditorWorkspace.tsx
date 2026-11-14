@@ -39,6 +39,7 @@ import {
   isVisualKind,
   type EditClip,
   type EditProject,
+  type EditTrack,
 } from "@/lib/editor/types";
 import EditComposition from "@/components/remotion/EditComposition";
 import JobProgress from "@/components/JobProgress";
@@ -344,6 +345,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
             <ClipInspector
               key={selected.clip.id}
               clip={selected.clip}
+              track={selected.track}
               assets={assets}
               busy={busy}
               onOp={runOp}
@@ -467,12 +469,14 @@ function Timeline({
 
 function ClipInspector({
   clip,
+  track,
   assets,
   busy,
   onOp,
   onPatch,
 }: {
   clip: EditClip;
+  track: EditTrack;
   assets: Asset[];
   busy: boolean;
   onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
@@ -491,13 +495,20 @@ function ClipInspector({
       <ClipTiming clip={clip} busy={busy} onOp={onOp} />
 
       {isVisualKind(clip.kind) && (
-        <VisualInspector clip={clip} assets={assets} busy={busy} onPatch={onPatch} />
+        <VisualInspector clip={clip} assets={assets} busy={busy} onOp={onOp} />
       )}
       {isAudioKind(clip.kind) && (
-        <AudioInspector clip={clip} assets={assets} busy={busy} onOp={onOp} onPatch={onPatch} />
+        <AudioInspector
+          clip={clip}
+          track={track}
+          assets={assets}
+          busy={busy}
+          onOp={onOp}
+          onPatch={onPatch}
+        />
       )}
       {clip.kind === "subtitle" && (
-        <SubtitleInspector clip={clip} busy={busy} onOp={onOp} onPatch={onPatch} />
+        <SubtitleInspector clip={clip} busy={busy} onOp={onOp} />
       )}
 
       {/* Acciones de clip (operaciones puras del backend) */}
@@ -587,12 +598,12 @@ function VisualInspector({
   clip,
   assets,
   busy,
-  onPatch,
+  onOp,
 }: {
   clip: EditClip;
   assets: Asset[];
   busy: boolean;
-  onPatch: (clipId: string, mutate: (clip: EditClip) => void) => void | Promise<void>;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
 }) {
   const t = clip.transform;
   const scale = t?.scale ?? 1;
@@ -601,20 +612,17 @@ function VisualInspector({
   const fit = t?.fit ?? "cover";
   const visualAssets = assets.filter((a) => a.kind === "image" || a.kind === "video");
 
-  const setTransform = (patch: Partial<NonNullable<EditClip["transform"]>>) =>
-    void onPatch(clip.id, (c) => {
-      const base = c.transform ?? {
-        scale: 1,
-        x: 0,
-        y: 0,
-        rotation: 0,
-        crop_l: 0,
-        crop_t: 0,
-        crop_r: 0,
-        crop_b: 0,
-        fit: "cover" as const,
-      };
-      c.transform = { ...base, ...patch };
+  // Cada control del transform llama a la operación pura set_transform (versiona +
+  // propaga a preview/export por igual).
+  const setTransform = (patch: Record<string, unknown>) =>
+    void onOp("set_transform", { clip_id: clip.id, ...patch });
+
+  const setTransition = (edge: "in" | "out", type: "none" | "fade") =>
+    void onOp("set_transition", {
+      clip_id: clip.id,
+      edge,
+      type,
+      duration_s: 0.5,
     });
 
   return (
@@ -629,7 +637,8 @@ function VisualInspector({
             defaultValue={scale}
             onBlur={(e) => {
               const v = Number(e.target.value);
-              if (Number.isFinite(v) && v > 0) setTransform({ scale: v });
+              if (Number.isFinite(v) && v > 0 && v !== scale)
+                setTransform({ scale: v });
             }}
             disabled={busy}
           />
@@ -637,9 +646,7 @@ function VisualInspector({
         <Field label="Ajuste">
           <Select
             value={fit}
-            onChange={(e) =>
-              setTransform({ fit: e.target.value as "cover" | "contain" })
-            }
+            onChange={(e) => setTransform({ fit: e.target.value })}
             disabled={busy}
           >
             <option value="cover">cover</option>
@@ -665,35 +672,45 @@ function VisualInspector({
           />
         </Field>
       </div>
-      <Field label="Transición entrada (fade)">
-        <Select
-          value={clip.transition_in?.type === "fade" ? "fade" : "none"}
-          onChange={(e) =>
-            void onPatch(clip.id, (c) => {
-              c.transition_in =
-                e.target.value === "fade"
-                  ? { type: "fade", duration_s: c.transition_in?.duration_s || 0.5 }
-                  : { type: "none", duration_s: 0 };
-            })
-          }
-          disabled={busy}
-        >
-          <option value="none">sin transición</option>
-          <option value="fade">fade</option>
-        </Select>
-      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Transición entrada">
+          <Select
+            value={clip.transition_in?.type === "fade" ? "fade" : "none"}
+            onChange={(e) =>
+              setTransition("in", e.target.value as "none" | "fade")
+            }
+            disabled={busy}
+          >
+            <option value="none">corte</option>
+            <option value="fade">fundido</option>
+          </Select>
+        </Field>
+        <Field label="Transición salida">
+          <Select
+            value={clip.transition_out?.type === "fade" ? "fade" : "none"}
+            onChange={(e) =>
+              setTransition("out", e.target.value as "none" | "fade")
+            }
+            disabled={busy}
+          >
+            <option value="none">corte</option>
+            <option value="fade">fundido</option>
+          </Select>
+        </Field>
+      </div>
       <Field label="Reemplazar recurso">
         <Select
           value={clip.asset_id ?? ""}
           onChange={(e) => {
-            const v = e.target.value ? Number(e.target.value) : null;
-            void onPatch(clip.id, (c) => {
-              c.asset_id = v;
+            if (!e.target.value) return;
+            void onOp("replace_asset", {
+              clip_id: clip.id,
+              asset_id: Number(e.target.value),
             });
           }}
           disabled={busy}
         >
-          <option value="">(sin recurso)</option>
+          <option value="">(elige un recurso)</option>
           {visualAssets.map((a) => (
             <option key={a.id} value={a.id}>
               #{a.id} · {a.kind}
@@ -707,12 +724,14 @@ function VisualInspector({
 
 function AudioInspector({
   clip,
+  track,
   assets,
   busy,
   onOp,
   onPatch,
 }: {
   clip: EditClip;
+  track: EditTrack;
   assets: Asset[];
   busy: boolean;
   onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
@@ -724,7 +743,34 @@ function AudioInspector({
   return (
     <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
       <h4 className="text-xs font-semibold uppercase text-neutral-500">Audio</h4>
-      <Field label={`Volumen (gain = ${clip.gain.toFixed(2)})`}>
+
+      {/* Volumen de la PISTA entera (set_track_volume) — afecta a todo su audio. */}
+      <Field label={`Volumen de pista (${track.volume.toFixed(2)})`}>
+        <input
+          type="range"
+          min={0}
+          max={2}
+          step={0.05}
+          defaultValue={track.volume}
+          onMouseUp={(e) =>
+            void onOp("set_track_volume", {
+              track_id: track.id,
+              volume: Number((e.target as HTMLInputElement).value),
+            })
+          }
+          onTouchEnd={(e) =>
+            void onOp("set_track_volume", {
+              track_id: track.id,
+              volume: Number((e.target as HTMLInputElement).value),
+            })
+          }
+          disabled={busy}
+          className="w-full"
+        />
+      </Field>
+
+      {/* Volumen del CLIP (set_clip_gain). */}
+      <Field label={`Volumen del clip (gain = ${clip.gain.toFixed(2)})`}>
         <input
           type="range"
           min={0}
@@ -747,6 +793,39 @@ function AudioInspector({
           className="w-full"
         />
       </Field>
+
+      {/* Fades in/out del clip (set_fade). */}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Fade in (s)">
+          <TextInput
+            type="number"
+            min="0"
+            step="0.1"
+            defaultValue={clip.fade_in_s}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v !== clip.fade_in_s)
+                void onOp("set_fade", { clip_id: clip.id, fade_in_s: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Fade out (s)">
+          <TextInput
+            type="number"
+            min="0"
+            step="0.1"
+            defaultValue={clip.fade_out_s}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v !== clip.fade_out_s)
+                void onOp("set_fade", { clip_id: clip.id, fade_out_s: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+      </div>
+
       <Field label="Reemplazar recurso de audio">
         <Select
           value={clip.asset_id ?? ""}
@@ -774,32 +853,18 @@ function SubtitleInspector({
   clip,
   busy,
   onOp,
-  onPatch,
 }: {
   clip: EditClip;
   busy: boolean;
   onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
-  onPatch: (clipId: string, mutate: (clip: EditClip) => void) => void | Promise<void>;
 }) {
   const [text, setText] = useState(clip.text ?? "");
   const style = clip.style;
 
-  const setStyle = (patch: Partial<NonNullable<EditClip["style"]>>) =>
-    void onPatch(clip.id, (c) => {
-      const base = c.style ?? {
-        font_family: "Inter, sans-serif",
-        font_size: 48,
-        color: "#FFFFFF",
-        bg_color: null,
-        bold: true,
-        outline: true,
-        position: "bottom" as const,
-        x: 0,
-        y: 0,
-        preset: "classic" as const,
-      };
-      c.style = { ...base, ...patch };
-    });
+  // Cada cambio de estilo llama a la operación pura set_style (versiona + paridad
+  // preview/export).
+  const setStyle = (patch: Record<string, unknown>) =>
+    void onOp("set_style", { clip_id: clip.id, ...patch });
 
   return (
     <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
@@ -820,9 +885,7 @@ function SubtitleInspector({
         <Field label="Preset">
           <Select
             value={style?.preset ?? "classic"}
-            onChange={(e) =>
-              setStyle({ preset: e.target.value as "classic" | "tiktok" })
-            }
+            onChange={(e) => setStyle({ preset: e.target.value })}
             disabled={busy}
           >
             <option value="classic">classic</option>
@@ -832,17 +895,24 @@ function SubtitleInspector({
         <Field label="Posición">
           <Select
             value={style?.position ?? "bottom"}
-            onChange={(e) =>
-              setStyle({
-                position: e.target.value as "top" | "center" | "bottom",
-              })
-            }
+            onChange={(e) => setStyle({ position: e.target.value })}
             disabled={busy}
           >
             <option value="top">arriba</option>
             <option value="center">centro</option>
             <option value="bottom">abajo</option>
           </Select>
+        </Field>
+        <Field label="Tipografía">
+          <TextInput
+            type="text"
+            defaultValue={style?.font_family ?? "Inter, sans-serif"}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v) setStyle({ font_family: v });
+            }}
+            disabled={busy}
+          />
         </Field>
         <Field label="Tamaño fuente">
           <TextInput
@@ -857,7 +927,7 @@ function SubtitleInspector({
             disabled={busy}
           />
         </Field>
-        <Field label="Color">
+        <Field label="Color texto">
           <TextInput
             type="text"
             defaultValue={style?.color ?? "#FFFFFF"}
@@ -865,6 +935,38 @@ function SubtitleInspector({
             disabled={busy}
           />
         </Field>
+        <Field label="Color fondo">
+          <TextInput
+            type="text"
+            placeholder="(sin fondo)"
+            defaultValue={style?.bg_color ?? ""}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              setStyle({ bg_color: v === "" ? null : v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+      </div>
+      <div className="flex flex-wrap gap-4">
+        <label className="flex items-center gap-2 text-xs text-neutral-300">
+          <input
+            type="checkbox"
+            defaultChecked={style?.bold ?? true}
+            onChange={(e) => setStyle({ bold: e.target.checked })}
+            disabled={busy}
+          />
+          Negrita
+        </label>
+        <label className="flex items-center gap-2 text-xs text-neutral-300">
+          <input
+            type="checkbox"
+            defaultChecked={style?.outline ?? true}
+            onChange={(e) => setStyle({ outline: e.target.checked })}
+            disabled={busy}
+          />
+          Contorno
+        </label>
       </div>
     </div>
   );

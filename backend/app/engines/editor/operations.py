@@ -6,10 +6,16 @@ tests deterministas sin ffmpeg/Chromium. Las invariantes (sin duraciones negativ
 tiempos dentro del origen recortable, clip/pista existentes) se validan y, si no se
 pueden cumplir, se lanza ``EditOperationError`` con un mensaje accionable.
 
-Slice mínimo (ver ``docs/EDITOR-MULTITRACK-ARCHITECTURE.md`` §3.2):
-- Clips: ``trim``, ``split``, ``delete``, ``duplicate``, ``move``, ``set_duration``.
-- Audio: ``set_clip_gain`` (y ``move`` sirve para reposicionar voces).
-- Subtítulos: ``set_text``, ``set_timing``.
+Operaciones del MVP (ver ``docs/EDITOR-MULTITRACK-ARCHITECTURE.md`` §3.2 y
+``docs/EDITOR-MVP-SCOPE.md`` §2):
+- Clips: ``trim``, ``split``, ``merge``, ``delete``, ``duplicate``, ``move``,
+  ``set_duration``.
+- Audio: ``set_clip_gain`` y ``set_track_volume`` (volumen por clip/pista), ``set_fade``
+  (fade in/out), y ``move`` reposiciona voces/música/SFX.
+- Visual: ``replace_asset`` (otro Asset del proyecto), ``set_transform``
+  (escala/posición/encuadre/fit) y ``set_transition`` (none|fade entre escenas).
+- Subtítulos: ``set_text``, ``set_timing``, ``set_style`` (tipografía/tamaño/color/fondo/
+  negrita/contorno/posición/preset) y ``split``/``merge``.
 
 Despacho por nombre: ``apply_operation(edit_project, op, params)``.
 """
@@ -18,7 +24,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from app.engines.editor.model import AUDIO_KINDS, EditClip, EditProject
+from app.engines.editor.model import (
+    AUDIO_KINDS,
+    VISUAL_KINDS,
+    ClipTransition,
+    EditClip,
+    EditProject,
+    SubtitleStyle,
+    VisualTransform,
+)
 
 __all__ = [
     "EditOperationError",
@@ -31,8 +45,15 @@ __all__ = [
     "op_move",
     "op_set_duration",
     "op_set_clip_gain",
+    "op_set_track_volume",
+    "op_set_fade",
+    "op_replace_asset",
+    "op_set_transform",
+    "op_set_transition",
     "op_set_text",
     "op_set_timing",
+    "op_set_style",
+    "op_merge",
 ]
 
 
@@ -57,6 +78,13 @@ def _require_str(params: dict, key: str) -> str:
     if not isinstance(value, str) or not value:
         raise EditOperationError(f"El parámetro {key!r} (str) es obligatorio.")
     return value
+
+
+def _require_track(edit_project: EditProject, track_id: str):
+    track = edit_project.track_by_id(track_id)
+    if track is None:
+        raise EditOperationError(f"No existe la pista {track_id!r} en el proyecto de edición.")
+    return track
 
 
 def _require_number(params: dict, key: str) -> float:
@@ -251,6 +279,150 @@ def op_set_clip_gain(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+def op_set_track_volume(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija el volumen (``volume`` >= 0) de una PISTA de audio (voice/music/sfx).
+
+    Params: ``track_id`` y ``volume`` (>= 0). El volumen de pista se multiplica por el
+    ``gain`` de cada clip al compilar (export) y en el preview, de modo que subir/bajar
+    una pista afecta a toda su música/voz/SFX por igual.
+    """
+    result = _clone(edit_project)
+    track = _require_track(result, _require_str(params, "track_id"))
+    if track.kind not in AUDIO_KINDS:
+        raise EditOperationError(
+            f"set_track_volume: la pista {track.id!r} no es de audio ({track.kind!r})."
+        )
+    volume = _require_number(params, "volume")
+    if volume < 0:
+        raise EditOperationError("set_track_volume: volume no puede ser negativo.")
+    track.volume = float(volume)
+    return result
+
+
+def op_set_fade(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija los fades de un clip de audio (``fade_in_s`` y/o ``fade_out_s`` >= 0).
+
+    Params: ``clip_id`` y, opcionales, ``fade_in_s`` y ``fade_out_s``. La suma de ambos
+    no puede exceder la duración del clip (no tendría sentido un fade más largo que el
+    propio clip). Se reflejan como filtros ``afade`` en la preparación del ``MixTrack``.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind not in AUDIO_KINDS:
+        raise EditOperationError(
+            f"set_fade: el clip {clip.id!r} no es de audio ({clip.kind!r})."
+        )
+
+    fade_in = clip.fade_in_s
+    fade_out = clip.fade_out_s
+    if "fade_in_s" in params:
+        fade_in = _require_number(params, "fade_in_s")
+    if "fade_out_s" in params:
+        fade_out = _require_number(params, "fade_out_s")
+    if fade_in < 0 or fade_out < 0:
+        raise EditOperationError("set_fade: los fades no pueden ser negativos.")
+    if fade_in + fade_out > clip.duration_s + 1e-6:
+        raise EditOperationError(
+            f"set_fade: fade_in+fade_out ({round(fade_in + fade_out, 3)}s) "
+            f"excede la duración del clip ({clip.duration_s}s)."
+        )
+    clip.fade_in_s = round(float(fade_in), 3)
+    clip.fade_out_s = round(float(fade_out), 3)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Visual (reemplazo de recurso, transform y transiciones)
+# --------------------------------------------------------------------------- #
+
+
+def op_replace_asset(edit_project: EditProject, params: dict) -> EditProject:
+    """Reemplaza el recurso (``asset_id``) de un clip visual por otro ``Asset``.
+
+    Params: ``clip_id`` y ``asset_id`` (int). Al cambiar de recurso se resetea el recorte
+    del origen (``source_in_s=0``, ``source_out_s=None``) porque el nuevo recurso tiene su
+    propia extensión; la duración en la línea de tiempo se conserva.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind not in VISUAL_KINDS:
+        raise EditOperationError(
+            f"replace_asset: el clip {clip.id!r} no es visual ({clip.kind!r})."
+        )
+    asset_id = params.get("asset_id")
+    if isinstance(asset_id, bool) or not isinstance(asset_id, int):
+        raise EditOperationError("replace_asset: 'asset_id' (int) es obligatorio.")
+    clip.asset_id = int(asset_id)
+    clip.source_in_s = 0.0
+    clip.source_out_s = None
+    return result
+
+
+def op_set_transform(edit_project: EditProject, params: dict) -> EditProject:
+    """Ajusta el transform (encuadre) de un clip visual.
+
+    Params: ``clip_id`` y cualquiera de ``scale`` (>0), ``x``, ``y``, ``rotation``,
+    ``crop_l/crop_t/crop_r/crop_b`` (0..1) y ``fit`` (``cover``|``contain``). Los campos
+    no indicados conservan su valor actual.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind not in VISUAL_KINDS:
+        raise EditOperationError(
+            f"set_transform: el clip {clip.id!r} no es visual ({clip.kind!r})."
+        )
+
+    base = (clip.transform or VisualTransform()).model_dump()
+    for key in ("scale", "x", "y", "rotation", "crop_l", "crop_t", "crop_r", "crop_b"):
+        if key in params:
+            base[key] = _require_number(params, key)
+    if "fit" in params:
+        fit = params.get("fit")
+        if fit not in ("cover", "contain"):
+            raise EditOperationError("set_transform: 'fit' debe ser 'cover' o 'contain'.")
+        base["fit"] = fit
+    for key in ("crop_l", "crop_t", "crop_r", "crop_b"):
+        if not (0.0 <= base[key] <= 1.0):
+            raise EditOperationError(f"set_transform: '{key}' debe estar entre 0 y 1.")
+    try:
+        clip.transform = VisualTransform.model_validate(base)
+    except Exception as exc:  # pydantic ValidationError -> mensaje accionable
+        raise EditOperationError(f"set_transform: {exc}") from exc
+    return result
+
+
+def op_set_transition(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija la transición de entrada/salida de un clip visual.
+
+    Params: ``clip_id``, ``edge`` (``in``|``out``, por defecto ``in``), ``type``
+    (``none``|``fade``) y ``duration_s`` (>= 0). ``none`` quita la transición.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind not in VISUAL_KINDS:
+        raise EditOperationError(
+            f"set_transition: el clip {clip.id!r} no es visual ({clip.kind!r})."
+        )
+    edge = params.get("edge", "in")
+    if edge not in ("in", "out"):
+        raise EditOperationError("set_transition: 'edge' debe ser 'in' o 'out'.")
+    t_type = params.get("type", "fade")
+    if t_type not in ("none", "fade"):
+        raise EditOperationError("set_transition: 'type' debe ser 'none' o 'fade' en el MVP.")
+    duration = float(params.get("duration_s", 0.5))
+    if duration < 0:
+        raise EditOperationError("set_transition: duration_s no puede ser negativa.")
+
+    transition = ClipTransition(
+        type=t_type, duration_s=0.0 if t_type == "none" else round(duration, 3)
+    )
+    if edge == "in":
+        clip.transition_in = transition
+    else:
+        clip.transition_out = transition
+    return result
+
+
 # --------------------------------------------------------------------------- #
 # Subtítulos
 # --------------------------------------------------------------------------- #
@@ -292,16 +464,125 @@ def op_set_timing(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+_STYLE_NUMERIC = {"font_size", "x", "y"}
+_STYLE_STR = {"font_family", "color"}
+_STYLE_BOOL = {"bold", "outline"}
+
+
+def op_set_style(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija el estilo completo de un clip de subtítulo.
+
+    Params: ``clip_id`` y cualquiera de ``font_family`` (str), ``font_size`` (int > 0),
+    ``color`` (str), ``bg_color`` (str|null), ``bold`` (bool), ``outline`` (bool),
+    ``position`` (``top``|``center``|``bottom``), ``x``/``y`` (px) y ``preset``
+    (``classic``|``tiktok``). Los campos no indicados conservan su valor.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+    if clip.kind != "subtitle":
+        raise EditOperationError(
+            f"set_style: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
+        )
+
+    base = (clip.style or SubtitleStyle()).model_dump()
+    for key in _STYLE_NUMERIC:
+        if key in params:
+            value = params[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EditOperationError(f"set_style: '{key}' debe ser numérico.")
+            base[key] = int(value) if key == "font_size" else float(value)
+    for key in _STYLE_STR:
+        if key in params:
+            value = params[key]
+            if not isinstance(value, str) or not value:
+                raise EditOperationError(f"set_style: '{key}' (str) no puede ser vacío.")
+            base[key] = value
+    for key in _STYLE_BOOL:
+        if key in params:
+            if not isinstance(params[key], bool):
+                raise EditOperationError(f"set_style: '{key}' debe ser booleano.")
+            base[key] = params[key]
+    if "bg_color" in params:
+        value = params["bg_color"]
+        if value is not None and not isinstance(value, str):
+            raise EditOperationError("set_style: 'bg_color' debe ser str o null.")
+        base["bg_color"] = value
+    if "position" in params:
+        if params["position"] not in ("top", "center", "bottom"):
+            raise EditOperationError("set_style: 'position' inválida.")
+        base["position"] = params["position"]
+    if "preset" in params:
+        if params["preset"] not in ("classic", "tiktok"):
+            raise EditOperationError("set_style: 'preset' debe ser 'classic' o 'tiktok'.")
+        base["preset"] = params["preset"]
+    try:
+        clip.style = SubtitleStyle.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_style: {exc}") from exc
+    return result
+
+
+def op_merge(edit_project: EditProject, params: dict) -> EditProject:
+    """Une dos clips ADYACENTES de la misma pista en uno solo (inverso de ``split``).
+
+    Params: ``clip_id`` (el primero) y ``other_id`` (el siguiente). El clip resultante
+    abarca de ``start_s`` del primero al fin del segundo; para subtítulos se concatena el
+    texto (primero + ' ' + segundo) y para clips recortables se une el rango del origen.
+    """
+    result = _clone(edit_project)
+    clip_id = _require_str(params, "clip_id")
+    other_id = _require_str(params, "other_id")
+    if clip_id == other_id:
+        raise EditOperationError("merge: clip_id y other_id deben ser distintos.")
+
+    found_a = result.find_clip(clip_id)
+    found_b = result.find_clip(other_id)
+    if found_a is None:
+        raise EditOperationError(f"merge: no existe el clip {clip_id!r}.")
+    if found_b is None:
+        raise EditOperationError(f"merge: no existe el clip {other_id!r}.")
+    track_a, clip_a = found_a
+    track_b, clip_b = found_b
+    if track_a.id != track_b.id:
+        raise EditOperationError("merge: los clips deben estar en la misma pista.")
+
+    first, second = (clip_a, clip_b) if clip_a.start_s <= clip_b.start_s else (clip_b, clip_a)
+    if first.kind != second.kind:
+        raise EditOperationError("merge: no se pueden unir clips de distinto tipo.")
+    if second.start_s > first.end_s + 1e-3:
+        raise EditOperationError(
+            "merge: los clips no son adyacentes (hay un hueco entre ellos)."
+        )
+
+    first.duration_s = round(second.end_s - first.start_s, 3)
+    if first.kind == "subtitle":
+        left = (first.text or "").strip()
+        right = (second.text or "").strip()
+        first.text = f"{left} {right}".strip()
+    elif first.source_out_s is not None and second.source_out_s is not None:
+        first.source_out_s = round(first.source_in_s + first.duration_s, 3)
+
+    track_a.clips.remove(second)
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
+    "merge": op_merge,
     "delete": op_delete,
     "duplicate": op_duplicate,
     "move": op_move,
     "set_duration": op_set_duration,
     "set_clip_gain": op_set_clip_gain,
+    "set_track_volume": op_set_track_volume,
+    "set_fade": op_set_fade,
+    "replace_asset": op_replace_asset,
+    "set_transform": op_set_transform,
+    "set_transition": op_set_transition,
     "set_text": op_set_text,
     "set_timing": op_set_timing,
+    "set_style": op_set_style,
 }
 
 

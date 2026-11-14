@@ -196,6 +196,39 @@ def test_compose_edit_full_render(render_env, db_ready, tmp_path):
         # Deriva + persiste el EditProject (como hace POST /editor/open).
         timeline = TimelineBuilder().build(project, session)
         edit_project = timeline_to_edit_project(timeline, project, list(project.assets))
+
+        # FEAT-004: ejercita el export con estilo de subtítulo + transform/transición en un
+        # clip visual, verificando que las operaciones nuevas sobreviven al re-render.
+        from app.engines.editor.operations import apply_operation
+
+        for track in edit_project.tracks:
+            if track.kind in ("image", "video") and track.clips:
+                edit_project = apply_operation(
+                    edit_project,
+                    "set_transform",
+                    {"clip_id": track.clips[0].id, "scale": 1.2, "x": 20.0, "fit": "contain"},
+                )
+                edit_project = apply_operation(
+                    edit_project,
+                    "set_transition",
+                    {"clip_id": track.clips[0].id, "edge": "in", "type": "fade", "duration_s": 0.3},
+                )
+                break
+        for track in edit_project.tracks:
+            if track.kind == "subtitle" and track.clips:
+                edit_project = apply_operation(
+                    edit_project,
+                    "set_style",
+                    {
+                        "clip_id": track.clips[0].id,
+                        "preset": "tiktok",
+                        "position": "center",
+                        "font_size": 64,
+                        "color": "#FFCC00",
+                    },
+                )
+                break
+
         save_edit_project(project, session, edit_project)
 
         try:

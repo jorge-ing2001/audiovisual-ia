@@ -6,11 +6,13 @@ import pytest
 
 from app.engines.editor.compile import compile_audio_tracks, compile_remotion_props
 from app.engines.editor.model import (
+    ClipTransition,
     EditClip,
     EditMeta,
     EditProject,
     EditTrack,
     SubtitleStyle,
+    VisualTransform,
 )
 
 
@@ -27,6 +29,8 @@ def _project() -> EditProject:
                 start_s=0.0,
                 duration_s=2.0,
                 asset_id=1,
+                transform=VisualTransform(scale=1.5, x=30.0, y=-10.0, fit="contain"),
+                transition_out=ClipTransition(type="fade", duration_s=0.5),
             ),
             EditClip(
                 id="v1",
@@ -35,6 +39,7 @@ def _project() -> EditProject:
                 start_s=2.0,
                 duration_s=3.0,
                 asset_id=2,
+                transition_in=ClipTransition(type="fade", duration_s=0.5),
             ),
         ],
     )
@@ -87,7 +92,18 @@ def _project() -> EditProject:
                 start_s=2.0,
                 duration_s=1.0,
                 text="hola",
-                style=SubtitleStyle(preset="tiktok", position="center"),
+                style=SubtitleStyle(
+                    preset="tiktok",
+                    position="center",
+                    font_family="Roboto, sans-serif",
+                    font_size=72,
+                    color="#FF0000",
+                    bg_color="#101010",
+                    bold=False,
+                    outline=False,
+                    x=12.0,
+                    y=-8.0,
+                ),
             )
         ],
     )
@@ -105,14 +121,41 @@ def test_compile_remotion_props_places_clips_in_frames():
     assert visuals[0]["src"] == "asset/1.png"
 
 
+def test_compile_remotion_props_visual_carry_transform_and_transition():
+    props = compile_remotion_props(_project(), lambda aid: f"asset/{aid}.png")
+    v0, v1 = props["visualClips"]
+    # Transform del primer clip.
+    assert v0["transform"]["scale"] == pytest.approx(1.5)
+    assert v0["transform"]["x"] == pytest.approx(30.0)
+    assert v0["transform"]["y"] == pytest.approx(-10.0)
+    assert v0["transform"]["fit"] == "contain"
+    # Transición fade de salida de v0 (0.5s * 30fps = 15 frames) y de entrada de v1.
+    assert v0["transitionOut"]["type"] == "fade"
+    assert v0["transitionOut"]["durationInFrames"] == 15
+    assert v1["transitionIn"]["type"] == "fade"
+    assert v1["transitionIn"]["durationInFrames"] == 15
+    # v1 sin transform explícito -> None.
+    assert v1["transform"] is None
+
+
 def test_compile_remotion_props_subtitles_carry_style():
     props = compile_remotion_props(_project())
     subs = props["subtitleClips"]
     assert len(subs) == 1
     assert subs[0]["from"] == 60  # 2.0s
     assert subs[0]["text"] == "hola"
-    assert subs[0]["style"]["preset"] == "tiktok"
-    assert subs[0]["style"]["position"] == "center"
+    style = subs[0]["style"]
+    assert style["preset"] == "tiktok"
+    assert style["position"] == "center"
+    # El estilo COMPLETO llega a inputProps (tipografía/tamaño/color/fondo/negrita/contorno/pos).
+    assert style["fontFamily"] == "Roboto, sans-serif"
+    assert style["fontSize"] == 72
+    assert style["color"] == "#FF0000"
+    assert style["bgColor"] == "#101010"
+    assert style["bold"] is False
+    assert style["outline"] is False
+    assert style["x"] == pytest.approx(12.0)
+    assert style["y"] == pytest.approx(-8.0)
 
 
 def test_compile_audio_tracks_delay_equals_start_and_effective_gain():
@@ -132,6 +175,23 @@ def test_compile_audio_tracks_prep_has_trim_and_fades():
     assert any("asetpts=PTS-STARTPTS" == p for p in prep)
     assert any(p.startswith("afade=t=in:st=0:d=0.2") for p in prep)
     assert any("afade=t=out" in p for p in prep)
+
+
+def test_track_volume_scales_effective_gain_in_props_and_mixtracks():
+    """Subir/bajar el volumen de la pista reescala el gain efectivo en preview y export."""
+    project = _project()
+    # La pista de voz tiene volume=0.8 y el clip gain=0.5 -> efectivo 0.4.
+    props = compile_remotion_props(project, lambda aid: str(aid))
+    assert props["audioClips"][0]["volume"] == pytest.approx(0.8 * 0.5)
+    tracks = compile_audio_tracks(project, lambda aid: f"/a/{aid}.wav")
+    assert tracks[0].gain == pytest.approx(0.8 * 0.5)
+
+    # Bajamos el volumen de la pista a la mitad: el efectivo cae en consecuencia.
+    project.tracks[1].volume = 0.4
+    props2 = compile_remotion_props(project, lambda aid: str(aid))
+    tracks2 = compile_audio_tracks(project, lambda aid: f"/a/{aid}.wav")
+    assert props2["audioClips"][0]["volume"] == pytest.approx(0.4 * 0.5)
+    assert tracks2[0].gain == pytest.approx(0.4 * 0.5)
 
 
 def test_compile_audio_skips_unresolved_assets():
