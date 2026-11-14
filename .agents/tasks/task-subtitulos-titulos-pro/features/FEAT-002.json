@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "VERTICAL SLICE: subtitulos karaoke end-to-end (resaltar la palabra pronunciada) reutilizando palabras.json/WordTiming existentes, con paridad preview/export. Demuestra la cadena completa: words en el modelo -> convert desde palabras.json -> operacion pura -> compilador -> render en los DOS espejos de EditComposition -> export verificado con ffprobe. NO re-ejecuta el ASR: adjunta a cada clip de subtitulo las palabras con tiempos relativos leidas de Asset(kind='srt').meta['words_json'].",
+  "status": "pending",
+  "steps": [
+    "Modelo: en backend/app/engines/editor/model.py anadir class SubtitleWord(BaseModel){text:str, start_s:float, end_s:float} y el campo EditClip.words: list[SubtitleWord] = Field(default_factory=list). Anadir a SubtitleStyle los campos karaoke:bool=False, highlight_color:str='#FFE34D', highlight_scale:float=1.0 (defaults neutros: documento viejo valida igual). Mantener extra='forbid'.",
+    "Convert: en backend/app/engines/editor/convert.py, al crear los clips de subtitulo, si el proyecto tiene un Asset(kind='srt') con meta['words_json'], leer palabras.json ([{text,startMs,endMs}]) y rellenar clip.words con las palabras cuyo intervalo cae dentro del cue, convertidas a tiempos RELATIVOS al clip (start_s_palabra = word.startMs/1000 - clip.start_s). Si no hay palabras para el cue, dejar words=[] (el render caera a resaltado por reparto uniforme). Mantener la funcion pura (recibir el contenido/parseo via parametro o helper, sin acoplar IO fuera de lo necesario; seguir el patron existente del modulo).",
+    "Operacion pura: en backend/app/engines/editor/operations.py anadir op_set_karaoke(edit_project, params) (params: clip_id, enabled:bool, opcionales highlight_color, highlight_scale) que valida kind=='subtitle' y fija style.karaoke/highlight_*; registrar 'set_karaoke' en OPERATIONS. Reutilizar helpers _require_clip/_require_str.",
+    "Compilador: en backend/app/engines/editor/compile.py, en _subtitle_clip_props emitir el array words (solo si hay) con {text, from (frame relativo), durationInFrames, startS, durationS} y propagar los campos karaoke/highlight_* dentro de style.",
+    "Tipos espejo: ampliar remotion/src/types.ts (EditSubtitleClipProps.words + EditSubtitleStyleProps.karaoke/highlightColor/highlightScale) y frontend/lib/editor/{types.ts,compose.ts} de forma identica. compose.ts debe emitir words igual que el backend.",
+    "Render (DOS espejos, identico): en remotion/src/EditComposition.tsx y frontend/components/remotion/EditComposition.tsx, en SubtitleOverlay, si style.karaoke y hay words, renderizar el texto palabra a palabra (spans) usando useCurrentFrame() (ya importado; frame es local al clip por estar dentro de su <Sequence>) para marcar la palabra activa (from<=frame<from+dur) con highlightColor y transform scale(highlightScale). Sin words o sin karaoke, render actual intacto.",
+    "Tests: backend/tests/editor/test_convert.py (rellena words desde un fixture palabras.json), test_operations.py (op_set_karaoke), test_compile.py (words en inputProps + regresion: sin karaoke el inputProps no cambia). Anadir un test de export en test_edit_export.py que construya un EditProject con un clip de subtitulo karaoke + imagen placeholder + voz WAV y verifique con ffprobe streams+duracion (skip con razon si Remotion no renderiza).",
+    "Verificar backend + frontend + remotion (comandos de verification)."
+  ],
+  "acceptance_criteria": [
+    "EditClip.words y los campos karaoke/highlight_* existen en el modelo Pydantic y en los tres espejos TS (frontend types/compose, remotion types), con extra='forbid' y defaults retrocompatibles.",
+    "timeline_to_edit_project rellena clip.words con tiempos RELATIVOS al clip a partir de palabras.json cuando existe Asset srt.meta['words_json']; test de convert lo demuestra con un fixture.",
+    "op_set_karaoke activa/configura el karaoke y rechaza clips no-subtitulo con EditOperationError; test lo cubre.",
+    "compile_remotion_props emite words y campos de karaoke solo cuando corresponde; un EditProject sin karaoke produce el MISMO inputProps que antes (test de regresion).",
+    "Los DOS EditComposition renderizan la palabra activa resaltada (mismo comportamiento) y, sin karaoke, el render es identico al actual.",
+    "Test de export: si Remotion renderiza, el MP4 tiene stream de video + audio y duracion coherente (ffprobe); si no, skip con razon explicita (no se simula el MP4).",
+    "pytest backend sin regresiones (>= baseline de FEAT-001), y build/lint/typecheck de frontend y remotion en verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/editor",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
