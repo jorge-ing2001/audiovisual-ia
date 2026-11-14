@@ -432,3 +432,95 @@ export function enqueueEditExport(projectId: number): Promise<EditExportResponse
 export function latestEditExport(projectId: number): Promise<Job> {
   return request<Job>(`/projects/${projectId}/editor/export`);
 }
+
+// --------------------------------------------------------------------------- //
+// Import/export de subtítulos (/projects/{id}/editor/subtitles) — FEAT-003
+// --------------------------------------------------------------------------- //
+
+export type SubtitleFormat = "srt" | "vtt" | "ass";
+export type SubtitleImportMode = "replace" | "append";
+
+/**
+ * Descarga la pista `subtitle` del EditProject activo en el formato pedido.
+ *
+ * Llama a `GET .../editor/subtitles/export?format=...`, recibe el fichero
+ * (SRT/VTT/ASS) como texto y dispara una descarga en el navegador con el nombre
+ * `subtitles.<ext>`. El contenido refleja los tiempos/texto editados en el editor.
+ */
+export async function exportSubtitles(
+  projectId: number,
+  format: SubtitleFormat,
+): Promise<void> {
+  const url = `${API_BASE_URL}/projects/${projectId}/editor/subtitles/export?format=${format}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { cache: "no-store" });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error de red";
+    throw new ApiError(
+      0,
+      `No se pudo contactar con el backend (${API_BASE_URL}): ${message}`,
+    );
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // cuerpo no-JSON
+    }
+    throw new ApiError(res.status, detail);
+  }
+  const blob = await res.blob();
+  // Descarga en el navegador (no en SSR: se invoca desde handlers de cliente).
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = `subtitles.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
+}
+
+/**
+ * Importa un fichero `.srt/.vtt/.ass` y reemplaza/añade la pista `subtitle`.
+ *
+ * Envía `multipart/form-data` a `POST .../editor/subtitles/import?mode=...`. El backend
+ * valida formato, parsea a cues, actualiza la pista, crea una Version (undo/redo) y
+ * guarda el fichero como Asset(kind='srt'). Devuelve el EditProject actualizado.
+ */
+export async function importSubtitles(
+  projectId: number,
+  file: File,
+  mode: SubtitleImportMode = "replace",
+): Promise<EditProjectRead> {
+  const form = new FormData();
+  form.append("file", file);
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE_URL}/projects/${projectId}/editor/subtitles/import?mode=${mode}`,
+      { method: "POST", cache: "no-store", body: form },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error de red";
+    throw new ApiError(
+      0,
+      `No se pudo contactar con el backend (${API_BASE_URL}): ${message}`,
+    );
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (body.detail) detail = JSON.stringify(body.detail);
+    } catch {
+      // cuerpo no-JSON
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as EditProjectRead;
+}

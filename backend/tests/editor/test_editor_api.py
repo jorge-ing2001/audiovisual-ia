@@ -209,3 +209,127 @@ def test_export_requires_open(client):
     body = resp.json()
     assert body["type"] == "edit_export"
     assert body["status"] == "pending"
+
+
+# --------------------------------------------------------------------------- #
+# Import / export de subtítulos (FEAT-003)
+# --------------------------------------------------------------------------- #
+
+_SRT_SAMPLE = (
+    "1\n00:00:00,000 --> 00:00:01,500\nHola mundo\n\n"
+    "2\n00:00:01,500 --> 00:00:03,000\nSegunda línea\n"
+)
+_VTT_SAMPLE = (
+    "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHola vtt\n\n"
+    "00:00:01.500 --> 00:00:03.000\nSegunda vtt\n"
+)
+_ASS_SAMPLE = (
+    "[Events]\n"
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    "Dialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,Hola ass\n"
+    "Dialogue: 0,0:00:01.50,0:00:03.00,Default,,0,0,0,,Segunda ass\n"
+)
+
+
+def _subtitle_clips(edit_project: dict) -> list:
+    return [
+        c
+        for t in edit_project["tracks"]
+        if t["kind"] == "subtitle"
+        for c in t["clips"]
+    ]
+
+
+def test_import_replace_sets_subtitle_track_and_versions(client):
+    project_id = _make_project_with_scene(client)
+    client.post(f"/projects/{project_id}/editor/open")
+
+    resp = client.post(
+        f"/projects/{project_id}/editor/subtitles/import?mode=replace",
+        files={"file": ("sub.srt", _SRT_SAMPLE.encode("utf-8"), "application/x-subrip")},
+    )
+    assert resp.status_code == 200
+    clips = _subtitle_clips(resp.json()["edit_project"])
+    assert [c["text"] for c in clips] == ["Hola mundo", "Segunda línea"]
+    assert clips[0]["start_s"] == 0.0
+    assert clips[0]["duration_s"] == 1.5
+
+    # Se guardó un Asset(kind='srt') de trazabilidad.
+    assets = client.get(f"/projects/{project_id}/assets?kind=srt").json()
+    assert any(a["meta"] and a["meta"].get("source") == "import" for a in assets)
+
+    # Undo vuelve al estado previo (sin esos clips importados).
+    undo = client.post(f"/projects/{project_id}/editor/undo")
+    assert undo.status_code == 200
+    assert [c["text"] for c in _subtitle_clips(undo.json()["edit_project"])] != [
+        "Hola mundo",
+        "Segunda línea",
+    ]
+
+
+def test_import_append_adds_to_existing(client):
+    project_id = _make_project_with_scene(client)
+    client.post(f"/projects/{project_id}/editor/open")
+    client.post(
+        f"/projects/{project_id}/editor/subtitles/import?mode=replace",
+        files={"file": ("sub.srt", _SRT_SAMPLE.encode("utf-8"), "application/x-subrip")},
+    )
+    resp = client.post(
+        f"/projects/{project_id}/editor/subtitles/import?mode=append",
+        files={"file": ("sub.vtt", _VTT_SAMPLE.encode("utf-8"), "text/vtt")},
+    )
+    assert resp.status_code == 200
+    texts = [c["text"] for c in _subtitle_clips(resp.json()["edit_project"])]
+    assert texts == ["Hola mundo", "Segunda línea", "Hola vtt", "Segunda vtt"]
+
+
+def test_import_rejects_invalid_extension(client):
+    project_id = _make_project_with_scene(client)
+    client.post(f"/projects/{project_id}/editor/open")
+    resp = client.post(
+        f"/projects/{project_id}/editor/subtitles/import",
+        files={"file": ("sub.txt", b"no es subtitulo", "text/plain")},
+    )
+    assert resp.status_code == 400
+
+
+def test_import_rejects_empty_or_unparseable(client):
+    project_id = _make_project_with_scene(client)
+    client.post(f"/projects/{project_id}/editor/open")
+    resp = client.post(
+        f"/projects/{project_id}/editor/subtitles/import",
+        files={"file": ("sub.srt", b"esto no tiene cues", "application/x-subrip")},
+    )
+    assert resp.status_code == 400
+
+
+def test_export_reflects_edited_subtitle_track(client):
+    project_id = _make_project_with_scene(client)
+    client.post(f"/projects/{project_id}/editor/open")
+    client.post(
+        f"/projects/{project_id}/editor/subtitles/import?mode=replace",
+        files={"file": ("sub.ass", _ASS_SAMPLE.encode("utf-8"), "text/x-ssa")},
+    )
+
+    srt = client.get(f"/projects/{project_id}/editor/subtitles/export?format=srt")
+    assert srt.status_code == 200
+    assert "subtitles.srt" in srt.headers["content-disposition"]
+    assert "Hola ass" in srt.text
+    assert "00:00:00,000 --> 00:00:01,500" in srt.text
+
+    vtt = client.get(f"/projects/{project_id}/editor/subtitles/export?format=vtt")
+    assert vtt.status_code == 200
+    assert vtt.text.startswith("WEBVTT")
+    assert "Hola ass" in vtt.text
+
+    ass = client.get(f"/projects/{project_id}/editor/subtitles/export?format=ass")
+    assert ass.status_code == 200
+    assert "[Events]" in ass.text
+    assert "Hola ass" in ass.text
+
+
+def test_export_requires_open_editor(client):
+    project_id = _make_project_with_scene(client)
+    assert (
+        client.get(f"/projects/{project_id}/editor/subtitles/export").status_code == 404
+    )
