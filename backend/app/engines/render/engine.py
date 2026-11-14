@@ -152,6 +152,127 @@ class RenderEngine:
             meta={"duration_s": round(timeline.total_duration_s, 3)},
         )
 
+    def compose_edit(
+        self,
+        project: Project,
+        edit_project,
+        session: Session,
+        *,
+        composition: str = "Edit",
+    ) -> RenderResult:
+        """Re-renderiza el MP4 DESDE un ``EditProject`` (no desde el prompt).
+
+        Método HERMANO de ``compose`` (que NO se modifica): reutiliza ``_run_remotion``,
+        ``_mux`` y el ``AudioMixer`` existentes. Flujo (§7 de la arquitectura):
+
+        1. ``compile_remotion_props`` -> escribe ``edit_timeline.json`` en el workspace
+           (rutas de recurso relativas a ``AIV_MEDIA_ROOT``, como el render de generación).
+        2. ``_run_remotion`` con la composición ``Edit`` (vídeo mudo). Si la composición
+           aún no existe en el proyecto Remotion (FEAT-003), falla con ``RenderUnavailable``
+           claro: no se simula un MP4.
+        3. ``compile_audio_tracks`` -> ``AudioMixer.mix`` a -14 LUFS (recorte/fades por clip
+           vía ``MixTrack.prep``).
+        4. ``_mux`` vídeo mudo + mezcla -> MP4 final + ``Asset(kind='video')`` nuevo
+           (descargable por ``GET /projects/{id}/video``).
+        """
+        # Import local para no acoplar el motor render al motor editor al importarse.
+        from app.engines.editor.compile import (
+            compile_audio_tracks,
+            compile_remotion_props,
+        )
+
+        root = media_root()
+
+        def _asset_src(asset_id: int | None) -> str | None:
+            path = self._resolve_asset_path(session, asset_id)
+            if path is None:
+                return None
+            try:
+                return Path(path).resolve().relative_to(root.resolve()).as_posix()
+            except ValueError:
+                return path
+
+        def _asset_abspath(asset_id: int | None) -> str | None:
+            path = self._resolve_asset_path(session, asset_id)
+            if path is None or not Path(path).is_file():
+                return None
+            return str(Path(path).resolve())
+
+        # Export headless: vídeo MUDO (muted=True). El audio final lo compone el
+        # AudioMixer a -14 LUFS (evita doble audio con los <Audio> del preview).
+        props = compile_remotion_props(edit_project, _asset_src, muted=True)
+
+        workspace = ensure_project_workspace(project.id) / "video"
+        edit_timeline_path = (
+            ensure_project_workspace(project.id) / "timeline" / "edit_timeline.json"
+        )
+        edit_timeline_path.parent.mkdir(parents=True, exist_ok=True)
+        edit_timeline_path.write_text(
+            json.dumps(props, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        silent_video = workspace / "edit_composition.mp4"
+        final_video = workspace / "edit_final.mp4"
+
+        self._run_remotion(str(edit_timeline_path), silent_video, composition=composition)
+
+        audio_path = self._mix_edit_audio(
+            edit_project, workspace, compile_audio_tracks, _asset_abspath
+        )
+        self._mux(silent_video, audio_path, final_video)
+
+        duration_s = round(edit_project.duration_s, 3)
+        asset = Asset(
+            project_id=project.id,
+            scene_id=None,
+            kind="video",
+            path=str(final_video),
+            provider="remotion+ffmpeg",
+            meta={
+                "source": "edit_export",
+                "edit_timeline_path": str(edit_timeline_path),
+                "silent_video": str(silent_video),
+                "audio_path": audio_path,
+                "duration_s": duration_s,
+                "width": edit_project.meta.width,
+                "height": edit_project.meta.height,
+                "fps": edit_project.meta.fps,
+            },
+        )
+        session.add(asset)
+        session.commit()
+        session.refresh(asset)
+
+        return RenderResult(
+            video_path=str(final_video),
+            asset_id=asset.id,
+            timeline_path=str(edit_timeline_path),
+            silent_video_path=str(silent_video),
+            audio_path=audio_path,
+            meta={"duration_s": duration_s, "source": "edit_export"},
+        )
+
+    @staticmethod
+    def _resolve_asset_path(session: Session, asset_id: int | None) -> str | None:
+        """Ruta en disco de un ``Asset`` por id (o ``None``)."""
+        if asset_id is None:
+            return None
+        asset = session.get(Asset, int(asset_id))
+        if asset is None or not asset.path:
+            return None
+        return asset.path
+
+    def _mix_edit_audio(
+        self, edit_project, workspace: Path, compile_audio_tracks, resolve_abspath
+    ) -> str | None:
+        """Compila y mezcla las pistas de audio del ``EditProject`` (o ``None`` si no hay)."""
+        tracks = compile_audio_tracks(edit_project, resolve_abspath)
+        if not tracks:
+            return None
+        out = workspace / "edit_mix.wav"
+        result = self.mixer.mix(tracks, str(out))
+        return result.path
+
     # --- pasos -------------------------------------------------------------- #
 
     def _persist_timeline(
@@ -179,8 +300,17 @@ class RenderEngine:
         session.commit()
         return str(timeline_path)
 
-    def _run_remotion(self, timeline_path: str, out_path: Path) -> None:
-        """Invoca el script de render de Remotion con el timeline como inputProps."""
+    def _run_remotion(
+        self, timeline_path: str, out_path: Path, *, composition: str | None = None
+    ) -> None:
+        """Invoca el script de render de Remotion con el timeline como inputProps.
+
+        ``composition`` selecciona la composición a renderizar (por defecto la del script,
+        ``"Timeline"``). El editor pasa ``"Edit"``; ``render.mjs`` lo reenvía a
+        ``selectComposition`` vía ``--composition``. Si la composición no existe en el
+        proyecto Remotion (p. ej. ``Edit`` antes de FEAT-003), el script falla y esto se
+        propaga como ``RenderUnavailable`` (nunca se simula un MP4).
+        """
         script = self.remotion_dir / "scripts" / "render.mjs"
         if not script.is_file():
             raise RenderUnavailable(
@@ -198,6 +328,8 @@ class RenderEngine:
             "--public-dir",
             str(media_root()),
         ]
+        if composition:
+            cmd += ["--composition", composition]
         try:
             proc = subprocess.run(
                 cmd,
