@@ -1,0 +1,7 @@
+{
+  "task_id": "task-editor-multipista",
+  "task_description": "Incorporar un modulo independiente de edicion de video (tipo CapCut) a audiovisual-ia: boton «Editar video» tras la generacion, editor dedicado con linea de tiempo MULTIPISTA (video/imagen/voz/musica/sfx/subtitulos), operaciones reales de clips (recortar/dividir/eliminar/duplicar/reordenar/duracion), edicion de audio (volumen/recorte/reposicion), subtitulos (texto/tipografia/tamano/color/posicion/estilo/tiempos), transiciones basicas, edicion de imagenes/videos (reemplazo/transform/duracion), vista previa en tiempo real con Remotion Player (con audio) y exportacion que re-renderiza desde el estado editado conservando la sincronia. Reutiliza las tablas Timeline/Version, el esquema del timeline, RenderEngine/AudioMixer/mux y la cola de jobs existentes, sin romper la generacion, 2D/3D ni la via de pago conmutable. Entregable de esta iteracion: PLAN (docs + desglose de tareas); la implementacion se conduce despues feature a feature.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}

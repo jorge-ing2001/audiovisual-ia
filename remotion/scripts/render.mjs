@@ -29,6 +29,7 @@ const parseArgs = (argv) => {
     else if (token === "--out") args.out = argv[++i];
     else if (token === "--codec") args.codec = argv[++i];
     else if (token === "--public-dir") args.publicDir = argv[++i];
+    else if (token === "--composition") args.composition = argv[++i];
   }
   return args;
 };
@@ -44,8 +45,20 @@ const run = async () => {
   const timelinePath = path.resolve(args.timeline);
   const outPath = path.resolve(args.out);
   const codec = args.codec ?? "h264";
+  // Composición a renderizar: "Timeline" (generación) por defecto; el editor pasa "Edit".
+  const compositionId = args.composition ?? "Timeline";
 
   const inputProps = JSON.parse(fs.readFileSync(timelinePath, "utf-8"));
+
+  // Render HEADLESS = export: el vídeo va MUDO. Para la composición "Edit" forzamos
+  // `muted=true` en los inputProps, de modo que los <Audio> por clip del preview NO
+  // suenen en el render (el audio final lo compone el AudioMixer a −14 LUFS en el
+  // backend y se muxea con FFmpeg). Así se evita el doble audio. La composición
+  // "Timeline" no tiene audio, así que el flag es inocuo para ella.
+  if (compositionId === "Edit") {
+    inputProps.muted = true;
+  }
+
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
 
   // publicDir: raíz desde la que `staticFile(...)` resuelve las imágenes locales de las
@@ -59,7 +72,7 @@ const run = async () => {
 
   const composition = await selectComposition({
     serveUrl,
-    id: "Timeline",
+    id: compositionId,
     inputProps,
   });
 

@@ -55,3 +55,116 @@ export const totalDurationInFrames = (props: TimelineProps): number => {
   );
   return Math.max(1, total);
 };
+
+// --------------------------------------------------------------------------- //
+// Editor multipista (composición "Edit") — espejo de compile_remotion_props
+// (backend/app/engines/editor/compile.py). El MISMO objeto inputProps alimenta
+// el Remotion Player del navegador (preview, con audio) y el render headless de
+// export (muted=true, el AudioMixer compone el audio final a −14 LUFS).
+// --------------------------------------------------------------------------- //
+
+export type EditFit = "cover" | "contain";
+
+export type EditTransformProps = {
+  scale: number;
+  x: number;
+  y: number;
+  rotation: number;
+  crop: { l: number; t: number; r: number; b: number };
+  fit: EditFit;
+};
+
+export type EditTransitionProps = {
+  type: "none" | "fade" | "slide" | "wipe";
+  durationInFrames: number;
+};
+
+export type EditEffectProps = {
+  type: string;
+  params: Record<string, unknown>;
+};
+
+export type EditVisualClipProps = {
+  id: string;
+  kind: "video" | "image";
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  src?: string | null;
+  assetId?: number | null;
+  transform?: EditTransformProps | null;
+  transitionIn?: EditTransitionProps | null;
+  transitionOut?: EditTransitionProps | null;
+  effects?: EditEffectProps[];
+  trackId?: string;
+  trackOrder?: number;
+};
+
+export type EditSubtitleStyleProps = {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bgColor?: string | null;
+  bold: boolean;
+  outline: boolean;
+  position: "top" | "center" | "bottom";
+  x: number;
+  y: number;
+  preset: "classic" | "tiktok";
+};
+
+export type EditSubtitleClipProps = {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  text: string;
+  style?: EditSubtitleStyleProps | null;
+};
+
+// Clip de audio para el PREVIEW del Player (voz/música/SFX). El compilador de
+// backend emite estas pistas a partir del EditProject (ver §6.1); el render de
+// export las ignora (muted=true) porque el audio final lo compone el AudioMixer.
+export type EditAudioClipProps = {
+  id: string;
+  kind: "voice" | "music" | "sfx";
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  src?: string | null;
+  assetId?: number | null;
+  // Volumen efectivo del clip (pista.volume * clip.gain), 0..1+.
+  volume: number;
+};
+
+export type EditProps = {
+  fps: number;
+  width: number;
+  height: number;
+  durationInFrames: number;
+  visualClips: EditVisualClipProps[];
+  subtitleClips: EditSubtitleClipProps[];
+  // Pistas de audio para el preview. Opcional: el export headless las silencia.
+  audioClips?: EditAudioClipProps[];
+  // Silencia el audio del Player (true en el render de export para evitar doble
+  // audio con el AudioMixer). En el preview del navegador va false.
+  muted?: boolean;
+};
+
+export const defaultEditProps: EditProps = {
+  fps: 30,
+  width: 1920,
+  height: 1080,
+  durationInFrames: 1,
+  visualClips: [],
+  subtitleClips: [],
+  audioClips: [],
+  muted: false,
+};
+
+// Duración total en frames de la composición "Edit" (al menos 1).
+export const editDurationInFrames = (props: EditProps): number =>
+  Math.max(1, Math.round(props.durationInFrames || 0));

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import app.jobs.handlers  # noqa: F401
 from app import __version__
-from app.api import assets, generation, jobs, projects, render, scenes
+from app.api import assets, editor, generation, jobs, projects, render, scenes
 from app.config import get_settings
 from app.jobs.queue import JobQueue
 from app.jobs.worker import worker_loop
@@ -75,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(generation.router)
     app.include_router(render.router)
+    app.include_router(editor.router)
 
     app.state.settings = settings
 

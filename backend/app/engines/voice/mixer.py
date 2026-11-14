@@ -42,11 +42,17 @@ class MixTrack:
     t=0). Se usa para SECUENCIAR las voces por escena: cada voz arranca en el offset
     acumulado de su escena en lugar de sonar todas en paralelo desde t=0. La música/SFX
     de fondo dejan ``delay_s=0.0`` para cubrir todo el vídeo.
+
+    ``prep`` son filtros de audio FFmpeg de PREPARACIÓN por clip (p. ej. ``atrim`` para
+    recortar el origen o ``afade`` para fades) que se aplican ANTES de ganancia/retardo y
+    de la mezcla. El editor multipista los usa para recortar/fundir clips de audio sin
+    tocar disco; el pipeline de generación deja la lista vacía (comportamiento idéntico).
     """
 
     path: str
     gain: float = 1.0
     delay_s: float = 0.0
+    prep: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -108,14 +114,17 @@ class AudioMixer:
         return max(0, int(round(delay_s * 1000)))
 
     def _prep_track(self, index: int, track: MixTrack) -> tuple[str, str]:
-        """Prepara una pista (ganancia + posición temporal). Devuelve (fragmento, label).
+        """Prepara una pista (recorte/fades + ganancia + posición). Devuelve (fragmento, label).
 
-        La ganancia se aplica con ``volume`` y la posición con ``adelay`` (un retardo por
-        canal, ``all=1`` para cubrir estéreo y mono). Un ``delay_s`` > 0 rellena el hueco
-        inicial con silencio, de modo que la pista arranca en su offset de escena.
+        Orden: primero los filtros de preparación por clip (``track.prep``: p. ej.
+        ``atrim``/``afade`` del editor), después la ganancia (``volume``) y por último la
+        posición en el tiempo (``adelay``, un retardo por canal con ``all=1`` para cubrir
+        estéreo y mono). Un ``delay_s`` > 0 rellena el hueco inicial con silencio, de modo
+        que la pista arranca en su offset. Sin ``prep`` el comportamiento es idéntico al
+        del pipeline de generación.
         """
         label = f"a{index}"
-        steps = [f"volume={track.gain}"]
+        steps = [*track.prep, f"volume={track.gain}"]
         delay_ms = self._delay_ms(track.delay_s)
         if delay_ms > 0:
             steps.append(f"adelay={delay_ms}:all=1")
@@ -130,7 +139,11 @@ class AudioMixer:
         ``duration=longest`` (la mezcla dura hasta el final de la última pista). Una sola
         pista sin delay se pasa directa; una sola pista con delay también se posiciona.
         """
-        if len(tracks) == 1 and self._delay_ms(tracks[0].delay_s) == 0:
+        if (
+            len(tracks) == 1
+            and self._delay_ms(tracks[0].delay_s) == 0
+            and not tracks[0].prep
+        ):
             if tracks[0].gain != 1.0:
                 return f"[0:a]volume={tracks[0].gain}[mix]"
             return "[0:a]anull[mix]"

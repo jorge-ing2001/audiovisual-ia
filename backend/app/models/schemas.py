@@ -170,6 +170,42 @@ class AssetRead(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Editor multipista (EditProject)
+# --------------------------------------------------------------------------- #
+
+
+class EditProjectRead(BaseModel):
+    """Respuesta del editor: el ``EditProject`` completo (documento multipista).
+
+    El cuerpo es el documento de edición validado por ``engines.editor.model.EditProject``
+    (serializado a dict). Se devuelve embebido en ``edit_project`` junto a metadatos
+    útiles para el frontend (duración derivada, versión del timeline origen).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    project_id: int
+    duration_s: float
+    source_timeline_version: int | None = None
+    edit_project: dict
+
+
+class EditOperationRequest(BaseModel):
+    """Cuerpo de ``POST /projects/{id}/editor/op``: una operación de edición pura."""
+
+    op: str = Field(..., min_length=1)
+    params: dict = Field(default_factory=dict)
+
+
+class EditExportResponse(BaseModel):
+    """Respuesta de ``POST /projects/{id}/editor/export``: el job encolado (para polling)."""
+
+    job_id: int
+    status: str
+    type: str
+
+
 class JobRead(BaseModel):
     """Estado de un job para polling desde el frontend."""
 

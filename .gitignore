@@ -19,6 +19,8 @@ remotion/build/
 .env
 *.db
 media/*
+# Workspaces de media generados por el backend en ejecucion/pruebas (no versionar).
+backend/media/
 # Excepcion: el catalogo de assets 3D (origen/licencia) SI se versiona; los binarios no.
 # Se re-incluyen solo las carpetas necesarias y, dentro, solo el README.
 !media/assets3d/

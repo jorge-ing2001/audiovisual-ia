@@ -4,6 +4,7 @@
 // estado (GET /projects/{id}/render) y permite previsualizar/descargar el MP4
 // (GET /projects/{id}/video). Toda acción es una llamada real a la API.
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import {
@@ -92,6 +93,9 @@ export default function RenderPanel({ projectId }: { projectId: number }) {
             <a href={videoUrl} download>
               <Button variant="secondary">Descargar MP4</Button>
             </a>
+            <Link href={`/projects/${projectId}/editor`}>
+              <Button>Editar video</Button>
+            </Link>
           </div>
         </Card>
       )}
