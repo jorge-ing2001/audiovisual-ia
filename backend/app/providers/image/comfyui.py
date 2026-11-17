@@ -644,6 +644,12 @@ class ComfyUIImageProvider:
         )
         meta["scheduler"] = self.scheduler
         meta["backend_engine"] = "comfyui"
+        # Resolución REAL de generación SD bajo claves propias del provider. VisualEngine
+        # sobreescribe meta['width']/meta['height'] con las del ImageAsset (dimensiones
+        # del aspecto objetivo); gen_width/gen_height conservan la latente generada sin
+        # colisionar con esos valores, de modo que la trazabilidad sobrevive.
+        meta["gen_width"] = width
+        meta["gen_height"] = height
         return ImageAsset(
             path=str(file_path),
             width=width,

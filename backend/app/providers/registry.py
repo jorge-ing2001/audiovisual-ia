@@ -75,6 +75,7 @@ def _register_builtin_providers() -> None:
         RunwayClipProvider,
         VeoClipProvider,
     )
+    from app.providers.image.comfyui import ComfyUIImageProvider
     from app.providers.image.placeholder import PlaceholderProvider
     from app.providers.image.stock import StockImageProvider
     from app.providers.llm.ollama import OllamaLLM
@@ -87,6 +88,7 @@ def _register_builtin_providers() -> None:
     register("llm", "openai", OpenAILLM)
     register("image", "stock", StockImageProvider)
     register("image", "placeholder", PlaceholderProvider)
+    register("image", "sd_local", ComfyUIImageProvider)
     register("tts", "kokoro", KokoroTTS)
     register("tts", "edge", EdgeTTS)
     register("tts", "elevenlabs", ElevenLabsTTS)
