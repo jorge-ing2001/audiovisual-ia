@@ -60,10 +60,13 @@ from app.engines.editor.subtitle_formats import (
     parse_vtt,
     subtitle_clips_to_cues,
 )
+from app.engines.qa.suggestions import build_suggestions
 from app.engines.render.timeline import TimelineBuilder
+from app.engines.voice.master import FfmpegError
 from app.engines.voice.subtitles import Cue, _fmt
+from app.engines.voice.trim import SilenceTrimmer
 from app.jobs.queue import JobQueue
-from app.models.entities import Asset, Job, Project
+from app.models.entities import Asset, Job, Project, Scene
 from app.models.schemas import (
     AssetRead,
     EditExportResponse,
@@ -751,3 +754,132 @@ def latest_edit_export(project_id: int, session: Session = Depends(get_db)) -> d
         "error": job.error,
         "result": job.result,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Edición inteligente (FEAT-006): análisis de silencios + sugerencias
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/projects/{project_id}/editor/silences")
+def editor_silences(
+    project_id: int,
+    clip_id: str = Query(..., description="Id del clip de voz a analizar."),
+    silence_db: float = Query(-35.0),
+    min_silence: float = Query(0.35),
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
+) -> dict:
+    """Detecta los tramos de silencio del audio de un clip de voz (preview del auto-corte).
+
+    La detección REAL usa ffmpeg (``silencedetect``) sobre el fichero del ``Asset`` del
+    clip; si ffmpeg no está disponible, responde ``{"status": "skipped", ...}`` con la
+    razón (nunca inventa tramos). Los tramos se devuelven en el eje del ORIGEN del audio,
+    listos para pasarse como ``silences`` a la operación ``auto_trim_silence`` (que es pura
+    y reversible vía ``undo``).
+    """
+    project = _get_project_or_404(session, project_id)
+    edit_project = load_active_edit_project(project, session, sequence)
+    if edit_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El editor no se ha abierto; usa POST .../editor/open primero.",
+        )
+    found = edit_project.find_clip(clip_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No existe el clip {clip_id!r} en el editor.",
+        )
+    _, clip = found
+    if clip.asset_id is None:
+        return {
+            "status": "skipped",
+            "clip_id": clip_id,
+            "detail": "El clip no referencia ningún asset de audio.",
+            "silences": [],
+        }
+    asset = session.get(Asset, clip.asset_id)
+    if asset is None or not asset.path or not Path(asset.path).is_file():
+        return {
+            "status": "skipped",
+            "clip_id": clip_id,
+            "detail": "El fichero de audio del clip no está disponible en disco.",
+            "silences": [],
+        }
+
+    try:
+        silences = SilenceTrimmer()._detect_silences(asset.path, silence_db, min_silence)
+    except FfmpegError as exc:
+        return {
+            "status": "skipped",
+            "clip_id": clip_id,
+            "detail": str(exc),
+            "silences": [],
+        }
+    return {
+        "status": "ok",
+        "clip_id": clip_id,
+        "silences": [[round(s, 3), round(e, 3)] for s, e in silences],
+    }
+
+
+@router.get("/projects/{project_id}/suggestions")
+def project_suggestions(project_id: int, session: Session = Depends(get_db)) -> list[dict]:
+    """Devuelve las sugerencias deterministas del proyecto (FEAT-006, §3.2).
+
+    Lee el estado (escenas + assets de generación y el ``EditProject`` activo si existe) y
+    delega en ``engines/qa/suggestions.py`` (lógica PURA, sin ffmpeg): escenas sin imagen,
+    escenas con duración inválida, subtítulos que exceden la duración, clips solapados y
+    (si procede) proyecto sin voz. Cada aviso tiene el shape ``{id,label,status,detail}``
+    de los checks del QA.
+    """
+    project = _get_project_or_404(session, project_id)
+
+    # Escenas de generación con un flag ``has_image`` resuelto desde los Assets.
+    scene_rows = (
+        session.execute(select(Scene).where(Scene.project_id == project_id)).scalars().all()
+    )
+    image_scene_ids = {
+        a.scene_id
+        for a in session.execute(
+            select(Asset).where(Asset.project_id == project_id, Asset.kind == "image")
+        )
+        .scalars()
+        .all()
+        if a.scene_id is not None
+    }
+    scenes = [
+        {
+            "id": s.id,
+            "order": s.order,
+            "duration_s": s.duration_s,
+            "has_image": s.id in image_scene_ids,
+        }
+        for s in scene_rows
+    ]
+
+    # Estado del editor (si se abrió): pistas/clips y duración total de referencia.
+    edit_project = load_active_edit_project(project, session)
+    tracks: list[dict] = []
+    reference_duration_s: float | None = None
+    if edit_project is not None:
+        reference_duration_s = edit_project.duration_s
+        for track in edit_project.tracks:
+            tracks.append(
+                {
+                    "id": track.id,
+                    "kind": track.kind,
+                    "clips": [
+                        {
+                            "id": c.id,
+                            "start_s": c.start_s,
+                            "duration_s": c.duration_s,
+                            "enabled": c.enabled,
+                        }
+                        for c in track.clips
+                    ],
+                }
+            )
+
+    return build_suggestions(scenes, tracks, reference_duration_s)
