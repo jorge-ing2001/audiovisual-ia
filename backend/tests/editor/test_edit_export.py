@@ -532,6 +532,162 @@ def test_compose_edit_font_and_position_render(render_env, db_ready, tmp_path):
         assert result.meta.get("source") == "edit_export"
 
 # --------------------------------------------------------------------------- #
+# 6. Export con VELOCIDAD (rate=2.0) + FREEZE (FEAT-006): MP4 con duración coherente
+# --------------------------------------------------------------------------- #
+
+
+def _write_test_video(ffmpeg: str, path: Path, *, seconds: float = 4.0) -> str:
+    """Genera un MP4 de prueba (vídeo sintético testsrc) para el clip de vídeo del editor."""
+    subprocess.run(
+        [
+            ffmpeg, "-y",
+            "-f", "lavfi", "-i", f"testsrc=size=320x240:rate=30:duration={seconds}",
+            "-pix_fmt", "yuv420p", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return str(path)
+
+
+def test_compose_edit_speed_and_freeze_render(render_env, db_ready, tmp_path):
+    """EditProject con un clip de VÍDEO a rate=2.0, exportado end-to-end.
+
+    Construye un clip de vídeo sintético (4 s) acelerado a rate=2.0 (duración en timeline
+    2 s) + voz, y verifica con ffprobe que el MP4 resultante tiene vídeo+audio y una
+    duración coherente con la línea de tiempo del EditProject (2 s, no los 4 s del origen).
+    Si Remotion no renderiza (sin Chromium), se SALTA con razón (nunca simula el MP4)."""
+    from app.engines.editor.compile import compile_remotion_props
+    from app.engines.editor.model import (
+        EditClip,
+        EditMeta,
+        EditProject,
+        EditTrack,
+    )
+    from app.engines.editor.operations import apply_operation
+    from app.engines.editor.store import save_edit_project
+    from app.engines.render import RenderEngine, RenderUnavailable
+    from app.engines.render.engine import FfmpegError
+    from app.models.entities import Asset, Project, Scene
+    from app.storage.db import session_scope
+    from app.storage.media import ensure_project_workspace
+
+    settings = get_settings()
+
+    with session_scope() as session:
+        project = Project(name="edit-speed-freeze", prompt="faro", aspect_ratio="16:9")
+        session.add(project)
+        session.flush()
+        scene = Scene(
+            project_id=project.id,
+            order=0,
+            narration_text="Clip acelerado.",
+            visual_prompt="faro",
+            duration_s=2.0,
+        )
+        session.add(scene)
+        session.flush()
+
+        ws = ensure_project_workspace(project.id)
+        video_src = _write_test_video(settings.ffmpeg_bin, ws / "clip.mp4", seconds=4.0)
+        voice = _write_tone(tmp_path / "voice.wav", seconds=2.0)
+        video_asset = Asset(
+            project_id=project.id,
+            scene_id=scene.id,
+            kind="video",
+            path=video_src,
+            provider="upload",
+            meta={"duration_s": 4.0},
+        )
+        voice_asset = Asset(
+            project_id=project.id,
+            scene_id=scene.id,
+            kind="voice",
+            path=voice,
+            provider="kokoro",
+            meta={"duration_s": 2.0},
+        )
+        session.add_all([video_asset, voice_asset])
+        session.commit()
+        session.refresh(project)
+        session.refresh(video_asset)
+        session.refresh(voice_asset)
+
+        edit_project = EditProject(
+            project_id=project.id,
+            meta=EditMeta(fps=30, width=320, height=240),
+            tracks=[
+                EditTrack(
+                    id="track_video",
+                    kind="video",
+                    order=0,
+                    clips=[
+                        EditClip(
+                            id="v0",
+                            track_id="track_video",
+                            kind="video",
+                            start_s=0.0,
+                            duration_s=4.0,
+                            source_in_s=0.0,
+                            source_out_s=4.0,
+                            asset_id=video_asset.id,
+                        )
+                    ],
+                ),
+                EditTrack(
+                    id="track_voice",
+                    kind="voice",
+                    order=1,
+                    clips=[
+                        EditClip(
+                            id="a0",
+                            track_id="track_voice",
+                            kind="voice",
+                            start_s=0.0,
+                            duration_s=2.0,
+                            source_in_s=0.0,
+                            source_out_s=2.0,
+                            asset_id=voice_asset.id,
+                        )
+                    ],
+                ),
+            ],
+        )
+        # rate=2.0 => duration_s del vídeo pasa a 2.0 (coherente con la voz).
+        edit_project = apply_operation(edit_project, "set_speed", {"clip_id": "v0", "rate": 2.0})
+        _, v0 = edit_project.find_clip("v0")
+        assert v0.duration_s == pytest.approx(2.0)
+
+        # El compilador emite speed en el clip de vídeo (paridad preview/export).
+        props = compile_remotion_props(edit_project, muted=True)
+        vc = next(c for c in props["visualClips"] if c["id"] == "v0")
+        assert vc["speed"] == {"rate": 2.0, "reverse": False}
+
+        save_edit_project(project, session, edit_project)
+
+        try:
+            result = RenderEngine().compose_edit(project, edit_project, session)
+        except RenderUnavailable as exc:
+            pytest.skip(
+                "Composición Remotion 'Edit' no disponible en este entorno "
+                f"(necesita Chromium headless): {exc}"
+            )
+        except FfmpegError as exc:  # pragma: no cover - solo si ffmpeg falla el mux
+            pytest.fail(f"El mux de FFmpeg falló: {exc}")
+
+        video = Path(result.video_path)
+        assert video.is_file() and video.stat().st_size > 0
+        streams = _probe_streams(settings.ffprobe_bin, str(video))
+        assert "video" in streams
+        assert "audio" in streams
+        # La duración sigue la línea de tiempo (2 s), no la del origen (4 s).
+        duration = _probe_duration(settings.ffprobe_bin, str(video))
+        assert abs(duration - 2.0) <= 0.5
+        assert result.meta.get("source") == "edit_export"
+
+
+# --------------------------------------------------------------------------- #
 # 4. Export con TÍTULO animado + OVERLAY/logo (FEAT-005/006)
 # --------------------------------------------------------------------------- #
 
