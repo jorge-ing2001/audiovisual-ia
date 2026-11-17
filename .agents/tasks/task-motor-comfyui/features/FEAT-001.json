@@ -1,0 +1,23 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Baseline verde: confirmar el entorno y la suite de tests antes de tocar nada. Patron de los bloques previos (el primer feature siempre establece la linea base). Fija el INVARIANTE DE REGRESION del Bloque 3 (punto 6 de la revision): el conteo de este baseline es el que debe seguir verde al terminar el bloque. No cambia codigo de producto.",
+  "status": "completed",
+  "steps": [
+    "Activar el venv del backend: cd backend && . .venv/bin/activate (ya existe; si falta algun paquete de dev, pip install -e '.[dev]').",
+    "Ejecutar la suite completa del backend con los binarios de FFmpeg del sandbox: AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q.",
+    "Anotar el conteo EXACTO de passed/skipped como linea base en el campo findings del feature (esperado aprox. 456 passed / 3 skipped con ffmpeg, segun los bloques previos). Este numero es el contrato de NO REGRESION: FEAT-002..007 solo pueden ANADIR tests verdes; ninguno de los 456 existentes puede pasar a fallar ni a skip.",
+    "Confirmar que docs/MOTOR-COMFYUI.md existe en la rama feat/motor-comfyui (entregable de diseno de este bloque)."
+  ],
+  "acceptance_criteria": [
+    "La suite de pytest del backend pasa en verde (0 failed) con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN configurados.",
+    "El conteo de tests queda registrado en findings como linea base de NO REGRESION (~456 passed / 3 skipped) para comparar al final del bloque.",
+    "Queda establecido el invariante (punto 6): al cerrar el bloque, los tests de los Bloques 0/1/2 siguen todos verdes y el conteo total solo crece por los tests nuevos de ComfyUI/VRAM.",
+    "docs/MOTOR-COMFYUI.md esta presente en la rama."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": "Baseline de NO REGRESION fijado: 456 passed, 3 skipped, 0 failed con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN=/projects/sandbox/.localbin (pytest 74s). Los 3 skipped son los esperados de los bloques previos. docs/MOTOR-COMFYUI.md presente en la rama feat/motor-comfyui (49514 bytes). Invariante: FEAT-002..007 solo pueden ANADIR tests verdes; los 456 existentes deben seguir verdes al cerrar el bloque."
+}

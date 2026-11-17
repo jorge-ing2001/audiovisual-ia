@@ -188,6 +188,68 @@ def _ollama_reachable(overrides: dict | None) -> bool:
         return False
 
 
+def _should_unload_ollama_before_images(project: Project) -> bool:
+    """¿Hay que liberar la VRAM de Ollama antes del paso de imágenes? (punto 2).
+
+    Solo ``True`` cuando se cumplen a la vez:
+      - ``AIV_OLLAMA_UNLOAD_BETWEEN_STAGES`` está activo, y
+      - el backend LLM activo es ``ollama``, y
+      - el backend de imagen activo es ``sd_local`` (ComfyUI, que compite por la misma
+        VRAM).
+
+    En el modo por defecto (imagen=stock/placeholder) devuelve ``False`` y el pipeline
+    NO cambia su comportamiento (invariante punto 6): no se consulta ni toca Ollama.
+    """
+    from app.config import get_settings
+
+    if not get_settings().ollama_unload_between_stages:
+        return False
+    overrides = project.provider_overrides
+    return (
+        registry.active_backend("llm", overrides) == "ollama"
+        and registry.active_backend("image", overrides) == "sd_local"
+    )
+
+
+def _release_llm_vram(project: Project) -> None:
+    """Libera (y opcionalmente verifica) la VRAM del modelo de Ollama. Tolerante.
+
+    Construye ``OllamaLLM`` respetando los overrides del proyecto, llama a ``unload()``
+    y, si ``AIV_OLLAMA_UNLOAD_VERIFY`` está activo, a ``verify_unloaded(...)`` con los
+    timeouts de config. Nunca lanza: una liberación que falle se registra pero no
+    interrumpe el pipeline (la generación de imágenes puede seguir, solo con menos VRAM
+    libre).
+    """
+    import logging
+
+    from app.config import get_settings
+    from app.providers.llm.ollama import OllamaLLM
+
+    settings = get_settings()
+    overrides = project.provider_overrides or {}
+    llm_overrides = overrides.get("llm_config") if isinstance(overrides, dict) else None
+    kwargs: dict = {}
+    if isinstance(llm_overrides, dict):
+        if llm_overrides.get("url"):
+            kwargs["url"] = llm_overrides["url"]
+        if llm_overrides.get("model"):
+            kwargs["model"] = llm_overrides["model"]
+
+    try:
+        llm = OllamaLLM(**kwargs)
+        llm.unload()
+        if settings.ollama_unload_verify:
+            llm.verify_unloaded(
+                timeout_s=settings.ollama_unload_timeout_s,
+                poll_interval_s=settings.ollama_unload_poll_interval_s,
+            )
+    except Exception as exc:  # noqa: BLE001 - liberar VRAM no debe romper el pipeline
+        logging.getLogger(__name__).warning(
+            "No se pudo liberar la VRAM de Ollama antes de las imágenes: %s; se continúa.",
+            exc,
+        )
+
+
 def _persist_fixture_script(project: Project, session: Session, fixture: dict) -> None:
     """Persiste un guion FIXTURE (etiquetado) como Script + Scenes, sin llamar al LLM.
 
@@ -485,6 +547,18 @@ def generate_video_handler(payload: dict | None, job_id: int) -> dict:
 
         # 1) Guion (IA o fixture etiquetado).
         script_source = _ensure_script(project, session, options, progress)
+
+        # 1bis) Liberación de VRAM entre etapas (punto 2): SOLO si LLM=ollama e
+        # imagen=sd_local y el flag está activo. Descarga el modelo de Ollama (y
+        # verifica) para que ComfyUI disponga de los 4 GB antes de generar imágenes. En
+        # el modo por defecto (imagen=stock) la condición es falsa y no se toca Ollama.
+        if _should_unload_ollama_before_images(project):
+            _release_llm_vram(project)
+            if progress.current is not None:
+                progress.current = {
+                    **progress.current,
+                    "detail": "VRAM de Ollama liberada (verificada)",
+                }
 
         # 2) Imagen + voz por escena (reanudable, con cache y reintentos por escena).
         _generate_scene_assets(project, session, options, progress)

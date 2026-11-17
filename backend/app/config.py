@@ -60,6 +60,42 @@ class Settings(BaseSettings):
     sd_local_enabled: bool = False
     sd_local_backend: str = "comfyui"
     sd_local_url: str = "http://localhost:8188"
+    # Parámetros del grafo SD 1.5 embebido / plantilla de ComfyUI (Bloque 3).
+    sd_checkpoint: str = "v1-5-pruned-emaonly.safetensors"
+    sd_steps: int = 20
+    sd_sampler: str = "euler"
+    sd_scheduler: str = "normal"
+    sd_cfg: float = 7.0
+    # Lado largo (px) de la LATENTE de generación; se escala por aspecto a múltiplos de 8.
+    # Bajo a propósito (640) para caber en los 4 GB de VRAM; el upscale es posterior.
+    sd_base_size: int = 640
+    # Negativo por defecto razonable para SD 1.5 (evita artefactos comunes).
+    sd_negative_prompt: str = (
+        "lowres, bad anatomy, bad hands, text, error, missing fingers, "
+        "extra digit, fewer digits, cropped, worst quality, low quality, "
+        "jpeg artifacts, signature, watermark, username, blurry"
+    )
+    # Modo bajo consumo de VRAM de ComfyUI (--lowvram); recomendado para 4 GB.
+    sd_lowvram: bool = True
+    # Ruta a un workflow JSON (formato API de ComfyUI) con marcadores {{...}}.
+    # Vacío = usar el grafo SD 1.5 embebido.
+    sd_workflow_path: str = ""
+    # Timeouts y reintentos de la parte de red (se consumen en FEAT-003).
+    sd_timeout_s: int = 600
+    sd_poll_interval_s: float = 1.5
+    sd_connect_timeout_s: float = 5.0
+    sd_max_retries: int = 1
+    # Liberación de VRAM de ComfyUI (POST /free) antes/después de generar.
+    sd_free_after: bool = True
+    sd_free_before: bool = False
+    # Concurrencia máxima de generaciones SD simultáneas. Límite inicial = 1 para no
+    # saturar los 4 GB de VRAM; ampliable por config si el hardware lo permite.
+    sd_max_concurrency: int = 1
+    # Descarga del modelo de Ollama entre etapas (libera VRAM para SD y viceversa).
+    ollama_unload_between_stages: bool = True
+    ollama_unload_verify: bool = True
+    ollama_unload_timeout_s: float = 30.0
+    ollama_unload_poll_interval_s: float = 1.0
 
     # --- Motor audiovisual ---
     video_engine: str = "remotion"
