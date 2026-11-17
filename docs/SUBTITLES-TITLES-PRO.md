@@ -386,6 +386,27 @@ headless de Remotion).
   fuentes con licencia libre (OFL/Apache). Las Google Fonts se cargan por su loader (no se
   redistribuyen ficheros) salvo las que se empaqueten explícitamente con su licencia.
 
+### 7.1. Implementación (FEAT-007)
+
+- Se usó **`@remotion/google-fonts` `^4.0.0`** (resuelto a 4.0.544), añadido a
+  `remotion/package.json` y `frontend/package.json`. El registro npm estaba accesible en
+  el sandbox, así que NO hizo falta el fallback a fuentes locales. No se commitea ningún
+  `.ttf/.woff2`: las familias se descargan del CDN de Google en tiempo de render/preview.
+- `FONT_CATALOG` vive en `remotion/src/fonts.ts` y su espejo `frontend/lib/editor/fonts.ts`
+  (mismas familias: **Inter, Montserrat, Roboto, Oswald, Bebas Neue, Anton, Lobster**).
+  Cada entrada es `{family, source:'google'|'local', css, category, license, file?}`.
+  `loadFont(family)` delega en el loader de `@remotion/google-fonts/<Family>`, que registra
+  internamente un `delayRender()`: el Chromium headless **espera** a que la fuente esté
+  lista antes de pintar, por lo que preview y export muestran la MISMA tipografía.
+- Las dos `EditComposition` (export y preview) llaman a `loadUsedFonts([...])` con las
+  familias de subtítulos/títulos antes de devolver el JSX.
+- El inspector usa un `<select>` del catálogo (componente `FontSelect`), **nunca texto
+  libre**, cableado a `op set_style` (subtítulo) y `op set_title_style` (título). El valor
+  guardado en `font_family` es el `css` del catálogo (p. ej. `"Inter, sans-serif"`).
+- Verificado por `remotion`/`frontend` `npm test` (catálogo no vacío, familias únicas,
+  `loadFont` acepta cada familia y rechaza las de fuera) y por un export end-to-end con
+  ffprobe (`test_compose_edit_font_and_position_render`) que renderiza Montserrat/Oswald.
+
 ---
 
 ## 8. Posicionamiento drag&drop (frontend)
@@ -410,6 +431,32 @@ La verificación automática del drag&drop no es posible en el sandbox (requiere
 se cubre con tests de la función pura de mapeo coordenada→`anchor`/`x,y` y un **smoke
 manual documentado** (abrir editor, arrastrar, comprobar que el preview y el export mueven
 el elemento al mismo sitio).
+
+### 8.1. Implementación (FEAT-008)
+
+- **Operación pura** `op_set_position(clip_id, ...)` en `operations.py` (registrada en
+  `OPERATIONS`): para `title`/`overlay` fija `anchor_x`/`anchor_y` (0..1, validado) de
+  `TitleStyle`/`OverlayStyle`; para `subtitle` fija `style.x`/`style.y` en px. Rechaza
+  video/image/audio (usan `set_transform`). Cubierta por `tests/editor/test_set_position.py`
+  (los tres tipos + validaciones + pureza).
+- **Función pura de mapeo** en `frontend/lib/editor/drag.ts`: `dragToAnchor(clientX,
+  clientY, playerRect) -> {anchor_x, anchor_y}` normalizado 0..1 y `dragToSubtitleOffset`
+  (offset en px de la composición respecto al anclaje del preset). Reciben el `rect` como
+  DATO (sin DOM), testeadas en `frontend/tests/drag.test.mjs`.
+- **Interacción**: en `EditorWorkspace.tsx`, una capa transparente superpuesta al Player
+  (activa solo con un clip de título/overlay/subtítulo seleccionado). `onPointerMove`
+  actualiza un estado `drag` que se funde con el `EditProject` en `previewProject` y
+  recompila `compileEditInputProps` → preview en tiempo real. `onPointerUp` persiste **UNA
+  sola** `op set_position` (una `Version` por gesto, no por píxel).
+- **Guías de zona segura**: bandas punteadas ámbar sobre el Player según
+  `meta.safe_top_frac`/`safe_bottom_frac` (visibles en formatos verticales 9:16).
+- **Inspector pro**: secciones por tipo de clip (Subtítulo con preset/karaoke/decoración/
+  fuente/offset x-y; Título con texto/estilo/animación/tipo/ancla/fuente; Overlay con
+  asset/opacidad/tamaño/rotación/mosaico/ancla), reutilizando `ui.tsx`.
+- **Smoke manual** (navegador, no automatizable en el sandbox): abrir el editor,
+  seleccionar un título/overlay/subtítulo, arrastrarlo sobre el preview (se mueve en
+  tiempo real), soltar (se crea una Version) y exportar: el elemento aparece en el MP4 en
+  la misma posición que en el preview (paridad "lo que ves = lo que exportas").
 
 ---
 

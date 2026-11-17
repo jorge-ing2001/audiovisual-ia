@@ -36,6 +36,12 @@ import {
   compileEditInputProps,
   type EditInputProps,
 } from "@/lib/editor/compose";
+import { FONT_CATALOG, findFont } from "@/lib/editor/fonts";
+import {
+  dragToAnchor,
+  dragToSubtitleOffset,
+  type PlayerRect,
+} from "@/lib/editor/drag";
 import {
   editProjectDurationS,
   findClip,
@@ -62,6 +68,82 @@ import {
 } from "@/components/ui";
 import { useJobPolling } from "@/lib/useJobPolling";
 
+// Estado del arrastre en curso sobre el preview (FEAT-008). Guarda el clip arrastrado y
+// su posición provisional, ya mapeada por las funciones puras de drag.ts: ancla (fracción
+// del frame) para título/overlay o desplazamiento en píxeles para subtítulo.
+interface DragState {
+  clipId: string;
+  kind: "title" | "overlay" | "subtitle";
+  anchor_x?: number;
+  anchor_y?: number;
+  x?: number;
+  y?: number;
+}
+
+// Estilos por defecto (espejo de los defaults de model.py) para construir una posición
+// provisional durante el arrastre cuando el clip aún no tiene estilo explícito.
+function defaultTitleStyle(): NonNullable<EditClip["title"]> {
+  return {
+    font_family: "Inter, sans-serif",
+    font_size: 96,
+    color: "#FFFFFF",
+    bold: true,
+    align: "center",
+    anchor_x: 0.5,
+    anchor_y: 0.5,
+    kind: "plain",
+    outline_color: "#000000",
+    outline_width: 0,
+    shadow: false,
+    shadow_color: "#000000",
+    shadow_blur: 0,
+    shadow_x: 0,
+    shadow_y: 0,
+    bg_opacity: 1,
+    bg_padding: 0.2,
+    bg_radius: 8,
+  };
+}
+
+function defaultOverlayStyle(): NonNullable<EditClip["overlay"]> {
+  return {
+    opacity: 1,
+    anchor_x: 0.5,
+    anchor_y: 0.5,
+    width_frac: 0.2,
+    rotation: 0,
+    tile: false,
+  };
+}
+
+function defaultSubtitleStyle(): NonNullable<EditClip["style"]> {
+  return {
+    font_family: "Inter, sans-serif",
+    font_size: 48,
+    color: "#FFFFFF",
+    bg_color: null,
+    bold: true,
+    outline: true,
+    position: "bottom",
+    x: 0,
+    y: 0,
+    preset: "classic",
+    outline_color: "#000000",
+    outline_width: 0,
+    shadow: false,
+    shadow_color: "#000000",
+    shadow_blur: 0,
+    shadow_x: 0,
+    shadow_y: 0,
+    bg_opacity: 1,
+    bg_padding: 0.2,
+    bg_radius: 8,
+    karaoke: false,
+    highlight_color: "#FFE34D",
+    highlight_scale: 1,
+  };
+}
+
 const TRACK_COLORS: Record<string, string> = {
   video: "bg-indigo-500/70",
   image: "bg-sky-500/70",
@@ -81,6 +163,12 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
   const [busy, setBusy] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+
+  // Arrastre en curso del clip seleccionado sobre el preview (FEAT-008). Mientras el
+  // usuario arrastra, guardamos aquí la posición provisional para re-renderizar el Player
+  // en tiempo real SIN pegar al backend; al soltar se persiste UNA sola op set_position.
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragLayerRef = useRef<HTMLDivElement>(null);
 
   const [exportJobId, setExportJobId] = useState<number | null>(null);
   const [exportReady, setExportReady] = useState(false);
@@ -157,10 +245,41 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     [],
   );
 
+  // Proyecto efectivo para el preview: el documento real + la posición provisional del
+  // arrastre en curso (si lo hay). Así el Player refleja el movimiento en tiempo real sin
+  // tocar el backend; al soltar se persiste y el documento real pasa a tener esa posición.
+  const previewProject = useMemo(() => {
+    if (!project || !drag) return project;
+    const next: EditProject = structuredClone(project);
+    const found = findClip(next, drag.clipId);
+    if (!found) return project;
+    const clip = found.clip;
+    if (drag.kind === "title") {
+      clip.title = {
+        ...(clip.title ?? defaultTitleStyle()),
+        anchor_x: drag.anchor_x ?? clip.title?.anchor_x ?? 0.5,
+        anchor_y: drag.anchor_y ?? clip.title?.anchor_y ?? 0.5,
+      };
+    } else if (drag.kind === "overlay") {
+      clip.overlay = {
+        ...(clip.overlay ?? defaultOverlayStyle()),
+        anchor_x: drag.anchor_x ?? clip.overlay?.anchor_x ?? 0.5,
+        anchor_y: drag.anchor_y ?? clip.overlay?.anchor_y ?? 0.5,
+      };
+    } else if (drag.kind === "subtitle") {
+      clip.style = {
+        ...(clip.style ?? defaultSubtitleStyle()),
+        x: drag.x ?? clip.style?.x ?? 0,
+        y: drag.y ?? clip.style?.y ?? 0,
+      };
+    }
+    return next;
+  }, [project, drag]);
+
   const inputProps: EditInputProps | null = useMemo(() => {
-    if (!project) return null;
-    return compileEditInputProps(project, resolveSrc, false);
-  }, [project, resolveSrc]);
+    if (!previewProject) return null;
+    return compileEditInputProps(previewProject, resolveSrc, false);
+  }, [previewProject, resolveSrc]);
 
   const durationS = project ? editProjectDurationS(project) : 0;
 
@@ -168,6 +287,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     if (!project || !selectedClipId) return null;
     return findClip(project, selectedClipId);
   }, [project, selectedClipId]);
+
+  // ¿El clip seleccionado es posicionable por arrastre? (título/overlay/subtítulo).
+  const draggableKind: DragState["kind"] | null = useMemo(() => {
+    const k = selected?.clip.kind;
+    if (k === "title" || k === "overlay" || k === "subtitle") return k;
+    return null;
+  }, [selected]);
 
   // ---- helpers de edición (todos pegan al backend y refrescan el estado) ---- //
 
@@ -387,6 +513,80 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     [project, projectId],
   );
 
+  // --------------------- drag&drop de posición (FEAT-008) --------------------- //
+
+  // Mapea un evento de puntero a la posición del clip usando las funciones PURAS de
+  // drag.ts (dragToAnchor para título/overlay; dragToSubtitleOffset para subtítulo).
+  const computeDrag = useCallback(
+    (clientX: number, clientY: number): DragState | null => {
+      if (!project || !selected || !draggableKind) return null;
+      const layer = dragLayerRef.current;
+      if (!layer) return null;
+      const r = layer.getBoundingClientRect();
+      const rect: PlayerRect = {
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+      };
+      if (draggableKind === "subtitle") {
+        const pos = selected.clip.style?.position ?? "bottom";
+        const { x, y } = dragToSubtitleOffset(
+          clientX,
+          clientY,
+          rect,
+          project.meta.width,
+          project.meta.height,
+          pos,
+        );
+        return { clipId: selected.clip.id, kind: "subtitle", x, y };
+      }
+      const { anchor_x, anchor_y } = dragToAnchor(clientX, clientY, rect);
+      return { clipId: selected.clip.id, kind: draggableKind, anchor_x, anchor_y };
+    },
+    [project, selected, draggableKind],
+  );
+
+  const handleDragStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!draggableKind) return;
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      const next = computeDrag(e.clientX, e.clientY);
+      if (next) setDrag(next);
+    },
+    [draggableKind, computeDrag],
+  );
+
+  const handleDragMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!drag) return;
+      const next = computeDrag(e.clientX, e.clientY);
+      if (next) setDrag(next);
+    },
+    [drag, computeDrag],
+  );
+
+  // Al soltar: persiste UNA sola op set_position (una Version por gesto) y limpia el drag.
+  const handleDragEnd = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!drag) return;
+      (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+      const final = drag;
+      setDrag(null);
+      const params: Record<string, unknown> =
+        final.kind === "subtitle"
+          ? { clip_id: final.clipId, x: final.x, y: final.y }
+          : {
+              clip_id: final.clipId,
+              anchor_x: final.anchor_x,
+              anchor_y: final.anchor_y,
+            };
+      void runOp("set_position", params);
+    },
+    [drag, runOp],
+  );
+
   // ------------------------------- render ------------------------------- //
 
   if (loading) {
@@ -450,7 +650,10 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
               {durationS.toFixed(1)} s
             </span>
           </div>
-          <div className="relative overflow-hidden rounded-lg border border-neutral-800 bg-black">
+          <div
+            ref={dragLayerRef}
+            className="relative overflow-hidden rounded-lg border border-neutral-800 bg-black"
+          >
             <Player
               ref={playerRef}
               component={EditComposition}
@@ -463,6 +666,23 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
               style={{ width: "100%" }}
               acknowledgeRemotionLicense
             />
+
+            {/* Capa de arrastre transparente superpuesta al Player: solo activa cuando hay
+                un clip de título/overlay/subtítulo seleccionado. onPointerMove mueve el
+                elemento en el preview en tiempo real; onPointerUp persiste UNA op
+                set_position (una Version por gesto). Deja los controles del Player (barra
+                inferior) libres reservando el 12% inferior. */}
+            {draggableKind && (
+              <div
+                className="absolute inset-x-0 top-0 cursor-move"
+                style={{ height: "88%", touchAction: "none" }}
+                onPointerDown={handleDragStart}
+                onPointerMove={handleDragMove}
+                onPointerUp={handleDragEnd}
+                onPointerCancel={handleDragEnd}
+                title="Arrastra para reposicionar el elemento seleccionado"
+              />
+            )}
             {/* Guías de zona segura (formato vertical 9:16): bandas que la UI de la red
                 social puede tapar; ayudan a no colocar subtítulos/títulos debajo. */}
             {(project.meta.safe_top_frac > 0 ||
@@ -788,6 +1008,43 @@ function Timeline({
         Duración total: {durationS.toFixed(2)} s
       </p>
     </Card>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Selector de tipografía del catálogo cerrado (FEAT-007)
+// --------------------------------------------------------------------------- //
+
+// <select> de familias del FONT_CATALOG (NUNCA texto libre): garantiza que font_family
+// sea una familia del catálogo, cargable por el loader de Remotion, de modo que preview y
+// export muestren la MISMA tipografía. El valor que se guarda y viaja a inputProps es el
+// `css` de la entrada (p. ej. "Inter, sans-serif"); el <select> casa el valor actual con
+// su familia canónica aunque el documento guarde el CSS.
+function FontSelect({
+  value,
+  busy,
+  onChange,
+}: {
+  value: string | undefined;
+  busy: boolean;
+  onChange: (css: string) => void;
+}) {
+  const current = findFont(value ?? "") ?? FONT_CATALOG[0];
+  return (
+    <Select
+      value={current.family}
+      onChange={(e) => {
+        const entry = findFont(e.target.value);
+        if (entry) onChange(entry.css);
+      }}
+      disabled={busy}
+    >
+      {FONT_CATALOG.map((f) => (
+        <option key={f.family} value={f.family}>
+          {f.family}
+        </option>
+      ))}
+    </Select>
   );
 }
 
@@ -1246,15 +1503,39 @@ function SubtitleInspector({
             <option value="bottom">abajo</option>
           </Select>
         </Field>
-        <Field label="Tipografía">
+        <Field label="Offset X (px)" hint="Arrastra el texto en el preview o ajústalo aquí">
           <TextInput
-            type="text"
-            defaultValue={style?.font_family ?? "Inter, sans-serif"}
-            onBlur={(e) => {
-              const v = e.target.value.trim();
-              if (v) setStyle({ font_family: v });
-            }}
+            type="number"
+            step="10"
+            defaultValue={style?.x ?? 0}
+            onBlur={(e) =>
+              void onOp("set_position", {
+                clip_id: clip.id,
+                x: Number(e.target.value) || 0,
+              })
+            }
             disabled={busy}
+          />
+        </Field>
+        <Field label="Offset Y (px)">
+          <TextInput
+            type="number"
+            step="10"
+            defaultValue={style?.y ?? 0}
+            onBlur={(e) =>
+              void onOp("set_position", {
+                clip_id: clip.id,
+                y: Number(e.target.value) || 0,
+              })
+            }
+            disabled={busy}
+          />
+        </Field>
+        <Field label="Tipografía" hint="Catálogo de fuentes con licencia libre">
+          <FontSelect
+            value={style?.font_family}
+            busy={busy}
+            onChange={(css) => setStyle({ font_family: css })}
           />
         </Field>
         <Field label="Tamaño fuente">
@@ -1485,6 +1766,13 @@ function TitleInspector({
             <option value="center">centro</option>
             <option value="right">derecha</option>
           </Select>
+        </Field>
+        <Field label="Tipografía" hint="Catálogo de fuentes con licencia libre">
+          <FontSelect
+            value={title?.font_family}
+            busy={busy}
+            onChange={(css) => setStyle({ font_family: css })}
+          />
         </Field>
         <Field label="Tamaño fuente">
           <TextInput

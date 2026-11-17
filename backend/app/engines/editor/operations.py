@@ -74,6 +74,7 @@ __all__ = [
     "op_set_title_animation",
     "op_add_overlay",
     "op_set_overlay_style",
+    "op_set_position",
 ]
 
 #: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
@@ -1072,6 +1073,83 @@ def op_set_overlay_style(edit_project: EditProject, params: dict) -> EditProject
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Posición (drag&drop sobre el preview: ancla para título/overlay; x/y px para subtítulo)
+# --------------------------------------------------------------------------- #
+
+
+def op_set_position(edit_project: EditProject, params: dict) -> EditProject:
+    """Reposiciona un clip a partir del arrastre sobre el preview (FEAT-008).
+
+    Es la operación pura que persiste UNA vez por gesto de drag&drop (al soltar). El
+    mapeo de coordenadas del Player a estos parámetros lo hace la función pura del
+    frontend ``dragToAnchor``; aquí solo validamos y escribimos en el modelo:
+
+    - ``title``/``overlay``: fija el anclaje ``anchor_x``/``anchor_y`` (fracción del frame,
+      0..1) de ``TitleStyle``/``OverlayStyle``. Params: ``clip_id`` y ``anchor_x`` y/o
+      ``anchor_y``. Conserva el resto del estilo. Si el estilo no existe, parte del default.
+    - ``subtitle``: fija el desplazamiento ``x``/``y`` en PÍXELES de ``SubtitleStyle``
+      (relativo a la posición del preset). Params: ``clip_id`` y ``x`` y/o ``y``.
+
+    No admite otros tipos de clip (video/image usan ``set_transform``; audio no se
+    posiciona). Lanza ``EditOperationError`` con mensaje accionable si faltan parámetros,
+    si el tipo no admite posicionado o si el ancla cae fuera de 0..1.
+    """
+    result = _clone(edit_project)
+    clip = _require_clip(result, _require_str(params, "clip_id"))
+
+    if clip.kind in ("title", "overlay"):
+        has_x = "anchor_x" in params
+        has_y = "anchor_y" in params
+        if not has_x and not has_y:
+            raise EditOperationError(
+                "set_position: se requiere 'anchor_x' y/o 'anchor_y' (0..1) para "
+                f"clips {clip.kind!r}."
+            )
+        if clip.kind == "title":
+            base = (clip.title or TitleStyle()).model_dump()
+        else:
+            base = (clip.overlay or OverlayStyle()).model_dump()
+        if has_x:
+            base["anchor_x"] = _require_number(params, "anchor_x")
+        if has_y:
+            base["anchor_y"] = _require_number(params, "anchor_y")
+        for key in ("anchor_x", "anchor_y"):
+            if not (0.0 <= base[key] <= 1.0):
+                raise EditOperationError(
+                    f"set_position: '{key}' debe estar entre 0 y 1 (recibido {base[key]})."
+                )
+        try:
+            if clip.kind == "title":
+                clip.title = TitleStyle.model_validate(base)
+            else:
+                clip.overlay = OverlayStyle.model_validate(base)
+        except Exception as exc:
+            raise EditOperationError(f"set_position: {exc}") from exc
+    elif clip.kind == "subtitle":
+        has_x = "x" in params
+        has_y = "y" in params
+        if not has_x and not has_y:
+            raise EditOperationError(
+                "set_position: se requiere 'x' y/o 'y' (px) para clips de subtítulo."
+            )
+        base = (clip.style or SubtitleStyle()).model_dump()
+        if has_x:
+            base["x"] = _require_number(params, "x")
+        if has_y:
+            base["y"] = _require_number(params, "y")
+        try:
+            clip.style = SubtitleStyle.model_validate(base)
+        except Exception as exc:
+            raise EditOperationError(f"set_position: {exc}") from exc
+    else:
+        raise EditOperationError(
+            f"set_position: el clip {clip.id!r} es {clip.kind!r}; solo se posicionan "
+            "title/overlay (ancla) y subtitle (x/y). Usa set_transform para video/image."
+        )
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
@@ -1099,6 +1177,7 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "set_title_animation": op_set_title_animation,
     "add_overlay": op_add_overlay,
     "set_overlay_style": op_set_overlay_style,
+    "set_position": op_set_position,
 }
 
 

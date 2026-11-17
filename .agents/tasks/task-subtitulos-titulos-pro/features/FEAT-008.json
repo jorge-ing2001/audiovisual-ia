@@ -2,7 +2,7 @@
   "id": "FEAT-008",
   "type": "feat",
   "description": "Posicionamiento visual drag&drop: arrastrar texto/overlay sobre el preview (Remotion Player) y mapearlo a operaciones del clip (set_position para titulo/overlay, set_style x/y para subtitulo). Incluye inspector pro por tipo de clip y guias de zona segura. Depende de que existan titulos/overlays (FEAT-005/FEAT-006) y usa los presets/zonas seguras de FEAT-004.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Operacion pura (operations.py): op_set_position(clip_id, anchor_x, anchor_y) que, para clip.kind in ('title','overlay') fija title.anchor_x/anchor_y u overlay.anchor_x/anchor_y, y para 'subtitle' fija style.x/style.y (px). Validar rangos. Registrar en OPERATIONS.",
     "Funcion pura de mapeo (frontend/lib/editor/): dragToAnchor(clientX, clientY, playerRect) -> {anchor_x, anchor_y} normalizado 0..1, y para subtitulo el offset en px respecto al anclaje. Debe ser testeable sin DOM (recibe el rect como dato).",
@@ -24,5 +24,5 @@
     "cd remotion && npm run typecheck"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "op_set_position en operations.py (registrada en OPERATIONS y __all__): title/overlay -> anchor_x/anchor_y de TitleStyle/OverlayStyle (0..1 validado, parte del default si no hay estilo); subtitle -> style.x/style.y en px; rechaza video/image/audio (usan set_transform) y clip inexistente; es pura (no muta la entrada). Cubierta por tests/editor/test_set_position.py (12 tests: los tres tipos + parciales + validaciones de rango + pureza + registro). Funcion pura dragToAnchor(clientX, clientY, playerRect) -> {anchor_x, anchor_y} normalizado 0..1 + dragToSubtitleOffset (offset px de la composicion respecto al anclaje del preset) en frontend/lib/editor/drag.ts, SIN DOM (rect como dato); testeada en frontend/tests/drag.test.mjs (varias coords/rects, centro/esquinas/recorte, rect degenerado). Interaccion en EditorWorkspace.tsx: capa transparente sobre el @remotion/player (activa solo con clip de titulo/overlay/subtitulo seleccionado, deja libre el 12% inferior de los controles); onPointerMove actualiza estado drag que se funde en previewProject y recompila compileEditInputProps (preview en tiempo real); onPointerUp persiste UNA sola op set_position (una Version por gesto). Guias de zona segura: bandas ambar punteadas segun meta.safe_top_frac/safe_bottom_frac (visibles en 9:16). Inspector pro por tipo: subtitulo (preset/karaoke/decoracion/fuente + offset x-y via set_position), titulo (texto/estilo/animacion/tipo/ancla/fuente), overlay (asset/opacidad/tamano/rotacion/mosaico/ancla). Smoke manual del drag documentado en docs 8.1 (no automatizable sin navegador). Export end-to-end con ffprobe (test_compose_edit_font_and_position_render) confirma que la posicion arrastrada llega al inputProps y sobrevive al render. Regresion: op nueva, no cambia defaults ni el inputProps de proyectos sin set_position; pytest 322 passed / 2 skipped (baseline 309)."
 }
