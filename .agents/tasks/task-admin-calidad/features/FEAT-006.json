@@ -2,7 +2,7 @@
   "id": "FEAT-006",
   "type": "feat",
   "description": "Edicion inteligente honesta (determinista): exponer el auto-corte por silencios ya implementado en engines/voice/trim.py como accion puntual del editor, REVERSIBLE y NO DESTRUCTIVA -> crea una NUEVA Version del EditProject (undo/redo via engines/editor/store.py), PRESERVA los tiempos y REFERENCIAS de subtitulos re-mapeando los cues con la logica pura ya existente (SilenceTrimmer.remap_timings/speech_segments), y permite REVERTIR la operacion con el undo del editor. Mas 'sugerencias' deterministas (escenas sin imagen, subtitulos que exceden la duracion, clips solapados) expuestas por GET /projects/{id}/suggestions. Nada de 'IA magica'.",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Auto-corte por silencios como operacion del editor: anadir una operacion al dict OPERATIONS de backend/app/engines/editor/operations.py que, dado un clip de audio (voz), use SilenceTrimmer para detectar/recortar silencios y ajustar source_in/out/duracion del clip. Exponer via el dispatch existente POST /projects/{id}/editor/op.",
     "Version y reversibilidad: la operacion persiste el nuevo EditProject con save_edit_project (engines/editor/store.py), creando una nueva Version (snapshot) igual que el resto de operaciones del editor, de modo que store.undo restaura el estado anterior (clip y cues originales). La operacion es NO destructiva: no sobrescribe el estado previo, lo deja en el historial.",
@@ -27,5 +27,5 @@
     "cd frontend && npm run build"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "op_auto_trim_silence es PURA (op(edit_project,params)->edit_project) y recibe los tramos 'silences' en params (el eje del ORIGEN del audio). La deteccion real con ffmpeg vive en GET /projects/{id}/editor/silences (SilenceTrimmer._detect_silences; responde status:skipped con razon si ffmpeg no esta, nunca inventa). Asi el op queda testeable sin ffmpeg y el dispatch POST .../editor/op se mantiene intacto. La reversibilidad la da el historial: save_edit_project crea una Version y store.undo restaura clip y cues (test test_auto_trim_creates_version_and_undo_reverts). Re-mapeo de cues con SilenceTrimmer.remap_timings pasando los cues al eje del origen (restando start_s, sumando source_in_s) y de vuelta; cues dentro de un silencio eliminado se descartan. Sugerencias puras en engines/qa/suggestions.py (shape {id,label,status,detail}) + GET /projects/{id}/suggestions en editor.py. Tests: test_suggestions.py (11) y test_editor_silence_op.py (8). Verificado: pytest -q tests/test_suggestions.py OK; con AIV_FFMPEG/FFPROBE tests/test_suggestions.py+test_silence_trim.py+test_editor_silence_op.py OK; suite completa 602 passed, 3 skipped (baseline 583 mantenido, +19 nuevos, mismos 3 skips); frontend npm run build OK."
 }
