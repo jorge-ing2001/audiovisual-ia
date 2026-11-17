@@ -14,8 +14,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
+  addMarker,
   applyEditOp,
   assetDownloadUrl,
+  batchDeleteClips,
+  batchMoveClips,
+  copyAttributes,
   enqueueEditExport,
   exportSubtitles,
   getEditProject,
@@ -25,10 +29,12 @@ import {
   openEditor,
   putEditProject,
   redoEdit,
+  removeMarker,
   undoEdit,
   uploadOverlay,
   videoDownloadUrl,
   type Asset,
+  type CopyableAttr,
   type Job,
   type SubtitleFormat,
 } from "@/lib/api";
@@ -42,6 +48,7 @@ import {
   dragToSubtitleOffset,
   type PlayerRect,
 } from "@/lib/editor/drag";
+import { collectSnapCandidates, snapTime } from "@/lib/editor/snap";
 import {
   editProjectDurationS,
   findClip,
@@ -49,6 +56,7 @@ import {
   isVisualKind,
   VISUAL_HIDE_KINDS,
   type EditClip,
+  type EditMarker,
   type EditMeta,
   type EditProject,
   type EditTrack,
@@ -163,6 +171,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // Selección múltiple (FEAT-004): además del clip activo (selectedClipId, que alimenta el
+  // inspector) se guarda el conjunto de clips seleccionados para las operaciones batch. El
+  // clip activo siempre está incluido en la selección.
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  // Ajuste magnético (snap) on/off (FEAT-003). Cuando está activo, los movimientos batch
+  // de la barra de selección se pegan al borde de clip/marcador más cercano.
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [assets, setAssets] = useState<Asset[]>([]);
 
   // Arrastre en curso del clip seleccionado sobre el preview (FEAT-008). Mientras el
@@ -296,6 +311,32 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     return null;
   }, [selected]);
 
+  // Selección en el timeline con modificadores (FEAT-004): click simple reemplaza la
+  // selección; shift/ctrl/meta alternan el clip en la selección múltiple. El último clic
+  // fija el clip activo (inspector). La selección se recorta a los clips que aún existen.
+  const handleSelectClip = useCallback(
+    (clipId: string, additive = false) => {
+      setSelectedClipId(clipId);
+      setSelectedClipIds((prev) => {
+        if (!additive) return [clipId];
+        if (prev.includes(clipId)) return prev.filter((id) => id !== clipId);
+        return [...prev, clipId];
+      });
+    },
+    [],
+  );
+
+  // Clips seleccionados que todavía existen en el documento (robusto a borrados/undo).
+  const selectedClips = useMemo(() => {
+    if (!project) return [] as { track: EditTrack; clip: EditClip }[];
+    const out: { track: EditTrack; clip: EditClip }[] = [];
+    for (const id of selectedClipIds) {
+      const found = findClip(project, id);
+      if (found) out.push(found);
+    }
+    return out;
+  }, [project, selectedClipIds]);
+
   // ---- helpers de edición (todos pegan al backend y refrescan el estado) ---- //
 
   const runOp = useCallback(
@@ -340,6 +381,136 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       }
     },
     [project, projectId],
+  );
+
+  // ------- selección múltiple: operaciones batch (FEAT-004) ------- //
+
+  // Elimina la selección entera en UN gesto (op batch_delete => una Version). Limpia la
+  // selección tras aplicar.
+  const handleBatchDelete = useCallback(async () => {
+    const ids = selectedClips.map((s) => s.clip.id);
+    if (ids.length === 0) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const read = await batchDeleteClips(projectId, ids);
+      setProject(read.edit_project);
+      setSelectedClipIds([]);
+      setSelectedClipId(null);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo eliminar la selección",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, selectedClips]);
+
+  // Desplaza la selección por delta_s en UN gesto (op batch_move => una Version). Si el
+  // snap está activo, ajusta el destino del clip MÁS TEMPRANO al borde/marcador más cercano
+  // y aplica ese delta real a toda la selección (conserva offsets relativos).
+  const handleBatchMove = useCallback(
+    async (deltaS: number) => {
+      if (!project || selectedClips.length === 0) return;
+      const ids = selectedClips.map((s) => s.clip.id);
+      let delta = deltaS;
+      if (snapEnabled) {
+        const anchor = selectedClips.reduce(
+          (min, s) => Math.min(min, s.clip.start_s),
+          Infinity,
+        );
+        const candidates = collectSnapCandidates(
+          project,
+          ids.length === 1 ? ids[0] : null,
+        );
+        const snapped = snapTime(anchor + deltaS, candidates, 0.25);
+        delta = Math.round((snapped - anchor) * 1000) / 1000;
+      }
+      // No permitir que ningún clip cruce a negativo (lo valida también el backend).
+      const minStart = selectedClips.reduce(
+        (min, s) => Math.min(min, s.clip.start_s),
+        Infinity,
+      );
+      if (minStart + delta < 0) delta = -minStart;
+      if (delta === 0) return;
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await batchMoveClips(projectId, ids, delta);
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudo mover la selección",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [project, projectId, selectedClips, snapEnabled],
+  );
+
+  // Copia los atributos del clip activo a los demás seleccionados (op copy_attributes =>
+  // una Version). El backend copia a cada destino solo lo compatible con su tipo.
+  const handleCopyAttributes = useCallback(
+    async (attrs: CopyableAttr[]) => {
+      if (!selectedClipId) return;
+      const targets = selectedClips
+        .map((s) => s.clip.id)
+        .filter((id) => id !== selectedClipId);
+      if (targets.length === 0 || attrs.length === 0) return;
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await copyAttributes(projectId, selectedClipId, targets, attrs);
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudieron copiar los atributos",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, selectedClipId, selectedClips],
+  );
+
+  // ------- marcadores (FEAT-003) ------- //
+
+  // Añade un marcador en el instante actual del Player (o en 0 si no hay posición).
+  const handleAddMarker = useCallback(async () => {
+    const frame = playerRef.current?.getCurrentFrame() ?? 0;
+    const fps = project?.meta.fps ?? 30;
+    const t_s = Math.max(0, Math.round((frame / fps) * 1000) / 1000);
+    setBusy(true);
+    setActionError(null);
+    try {
+      const read = await addMarker(projectId, t_s);
+      setProject(read.edit_project);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo añadir el marcador",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [project, projectId]);
+
+  const handleRemoveMarker = useCallback(
+    async (markerId: string) => {
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await removeMarker(projectId, markerId);
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudo quitar el marcador",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId],
   );
 
   const handleUndo = useCallback(async () => {
@@ -627,6 +798,26 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
           <h1 className="text-xl font-bold text-neutral-100">Editor de vídeo</h1>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSnapEnabled((v) => !v)}
+            aria-pressed={snapEnabled}
+            title="Ajuste magnético: pega los movimientos a bordes de clip y marcadores"
+            className={`rounded-md px-2.5 py-1.5 text-sm transition-colors ${
+              snapEnabled
+                ? "bg-emerald-500/20 text-emerald-300"
+                : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+            }`}
+          >
+            🧲 Snap {snapEnabled ? "on" : "off"}
+          </button>
+          <Button
+            variant="secondary"
+            onClick={() => void handleAddMarker()}
+            loading={busy}
+          >
+            ＋ Marcador
+          </Button>
           <Button variant="secondary" onClick={() => void handleUndo()} loading={busy}>
             ↶ Deshacer
           </Button>
@@ -780,16 +971,139 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         onUploadOverlay={handleUploadOverlay}
       />
 
+      {/* Barra de selección múltiple (FEAT-004): eliminar / mover / copiar atributos. */}
+      {selectedClips.length > 0 && (
+        <SelectionBar
+          selectedClips={selectedClips}
+          activeClipId={selectedClipId}
+          snapEnabled={snapEnabled}
+          busy={busy}
+          onClear={() => {
+            setSelectedClipIds([]);
+            setSelectedClipId(null);
+          }}
+          onBatchDelete={handleBatchDelete}
+          onBatchMove={handleBatchMove}
+          onCopyAttributes={handleCopyAttributes}
+        />
+      )}
+
       {/* Línea de tiempo multipista */}
       <Timeline
         project={project}
         durationS={durationS}
         selectedClipId={selectedClipId}
-        onSelect={setSelectedClipId}
+        selectedClipIds={selectedClipIds}
+        onSelect={handleSelectClip}
+        onRemoveMarker={handleRemoveMarker}
         busy={busy}
         onOp={runOp}
       />
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Barra de selección múltiple (FEAT-004)
+// --------------------------------------------------------------------------- //
+
+// Acciones sobre la selección: cada una es UN gesto = UNA operación batch = UNA Version.
+// - Eliminar: op batch_delete (atómico; rechaza pistas locked).
+// - Mover ◀/▶: op batch_move por un delta fijo (ajustado por snap si está activo).
+// - Copiar atributos: op copy_attributes del clip activo a los demás (por tipo compatible).
+function SelectionBar({
+  selectedClips,
+  activeClipId,
+  snapEnabled,
+  busy,
+  onClear,
+  onBatchDelete,
+  onBatchMove,
+  onCopyAttributes,
+}: {
+  selectedClips: { track: EditTrack; clip: EditClip }[];
+  activeClipId: string | null;
+  snapEnabled: boolean;
+  busy: boolean;
+  onClear: () => void;
+  onBatchDelete: () => void | Promise<void>;
+  onBatchMove: (deltaS: number) => void | Promise<void>;
+  onCopyAttributes: (attrs: CopyableAttr[]) => void | Promise<void>;
+}) {
+  const count = selectedClips.length;
+  const active = selectedClips.find((s) => s.clip.id === activeClipId) ?? null;
+  // Atributos copiables aplicables al TIPO del clip activo (lo que el usuario puede pegar
+  // al resto de la selección). El backend igualmente filtra por el tipo de cada destino.
+  const attrsForKind: Record<string, CopyableAttr[]> = {
+    video: ["transform", "transition"],
+    image: ["transform", "transition"],
+    voice: ["gain", "fade"],
+    music: ["gain", "fade"],
+    sfx: ["gain", "fade"],
+    subtitle: ["style"],
+    title: ["title"],
+    overlay: ["overlay"],
+  };
+  const copyable = active ? attrsForKind[active.clip.kind] ?? [] : [];
+  const hasTargets = count > 1 && activeClipId != null;
+
+  return (
+    <Card className="flex flex-wrap items-center gap-3">
+      <span className="text-sm font-medium text-neutral-200">
+        {count} clip{count === 1 ? "" : "s"} seleccionado{count === 1 ? "" : "s"}
+      </span>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="secondary"
+          onClick={() => void onBatchMove(-0.5)}
+          loading={busy}
+          title="Mover selección 0,5 s a la izquierda"
+        >
+          ◀ 0,5 s
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => void onBatchMove(0.5)}
+          loading={busy}
+          title="Mover selección 0,5 s a la derecha"
+        >
+          0,5 s ▶
+        </Button>
+        <span className="text-xs text-neutral-500">
+          {snapEnabled ? "(con snap)" : ""}
+        </span>
+      </div>
+      {hasTargets && copyable.length > 0 && (
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-neutral-500">
+            Copiar del activo a la selección:
+          </span>
+          {copyable.map((attr) => (
+            <Button
+              key={attr}
+              variant="secondary"
+              onClick={() => void onCopyAttributes([attr])}
+              loading={busy}
+              title={`Pegar ${attr} del clip activo al resto de la selección`}
+            >
+              {attr}
+            </Button>
+          ))}
+        </div>
+      )}
+      <div className="ml-auto flex items-center gap-2">
+        <Button
+          variant="danger"
+          onClick={() => void onBatchDelete()}
+          loading={busy}
+        >
+          Eliminar selección
+        </Button>
+        <Button variant="secondary" onClick={onClear} disabled={busy}>
+          Deseleccionar
+        </Button>
+      </div>
+    </Card>
   );
 }
 
@@ -1028,23 +1342,62 @@ function Timeline({
   project,
   durationS,
   selectedClipId,
+  selectedClipIds,
   onSelect,
+  onRemoveMarker,
   busy,
   onOp,
 }: {
   project: EditProject;
   durationS: number;
   selectedClipId: string | null;
-  onSelect: (id: string) => void;
+  selectedClipIds: string[];
+  onSelect: (id: string, additive?: boolean) => void;
+  onRemoveMarker: (markerId: string) => void | Promise<void>;
   busy: boolean;
   onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
 }) {
   const scale = durationS > 0 ? 100 / durationS : 0; // % por segundo
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
+  const markers: EditMarker[] = project.markers ?? [];
+  const selectedSet = new Set(selectedClipIds);
 
   return (
     <Card className="flex flex-col gap-2">
       <h2 className="font-medium text-neutral-100">Línea de tiempo</h2>
+      <p className="text-xs text-neutral-500">
+        Mantén Mayús o Ctrl/⌘ al hacer clic para seleccionar varios clips.
+      </p>
+      {/* Regla con marcadores (FEAT-003): puntos etiquetados que el snap usa como anclas. */}
+      <div className="flex items-center gap-3">
+        <div className="w-32 shrink-0 text-xs text-neutral-500">Marcadores</div>
+        <div className="relative h-6 flex-1 rounded-md border border-neutral-800 bg-neutral-950">
+          {markers.map((marker) => {
+            const left = durationS > 0 ? Math.max(0, Math.min(100, marker.t_s * scale)) : 0;
+            return (
+              <button
+                key={marker.id}
+                type="button"
+                disabled={busy}
+                onClick={() => void onRemoveMarker(marker.id)}
+                title={`${marker.label || "marcador"} · ${marker.t_s.toFixed(2)}s (clic para quitar)`}
+                className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 disabled:opacity-40"
+                style={{ left: `${left}%`, backgroundColor: marker.color }}
+              >
+                <span
+                  className="absolute -top-0.5 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45"
+                  style={{ backgroundColor: marker.color }}
+                />
+              </button>
+            );
+          })}
+          {markers.length === 0 && (
+            <span className="absolute left-2 top-1 text-[10px] text-neutral-600">
+              Usa «＋ Marcador» para marcar el instante actual
+            </span>
+          )}
+        </div>
+      </div>
       <div className="flex flex-col gap-2">
         {tracks.map((track) => (
           <div key={track.id} className="flex items-center gap-3">
@@ -1065,21 +1418,26 @@ function Timeline({
               {track.clips.map((clip) => {
                 const left = Math.max(0, clip.start_s * scale);
                 const width = Math.max(1.5, clip.duration_s * scale);
-                const isSel = clip.id === selectedClipId;
+                const isActive = clip.id === selectedClipId;
+                const isSel = selectedSet.has(clip.id);
                 return (
                   <button
                     key={clip.id}
                     type="button"
-                    onClick={() => onSelect(clip.id)}
+                    onClick={(e) =>
+                      onSelect(clip.id, e.shiftKey || e.ctrlKey || e.metaKey)
+                    }
                     title={`${clip.kind} · ${clip.start_s.toFixed(2)}s → ${(
                       clip.start_s + clip.duration_s
                     ).toFixed(2)}s`}
                     className={`absolute top-0.5 bottom-0.5 flex items-center overflow-hidden rounded px-1.5 text-[10px] font-medium text-white/90 ${
                       TRACK_COLORS[track.kind] ?? "bg-neutral-600"
                     } ${
-                      isSel
+                      isActive
                         ? "ring-2 ring-white"
-                        : "ring-1 ring-black/40 hover:ring-white/60"
+                        : isSel
+                          ? "ring-2 ring-sky-300"
+                          : "ring-1 ring-black/40 hover:ring-white/60"
                     } ${clip.enabled ? "" : "opacity-40"}`}
                     style={{ left: `${left}%`, width: `${width}%` }}
                   >

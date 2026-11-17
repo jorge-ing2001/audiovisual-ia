@@ -29,6 +29,7 @@ from app.engines.editor.model import (
     VISUAL_KINDS,
     ClipTransition,
     EditClip,
+    EditMarker,
     EditMeta,
     EditProject,
     EditTrack,
@@ -77,6 +78,12 @@ __all__ = [
     "op_set_position",
     "op_set_track_flags",
     "op_ripple_delete",
+    "op_add_marker",
+    "op_remove_marker",
+    "op_set_marker",
+    "op_batch_delete",
+    "op_batch_move",
+    "op_copy_attributes",
 ]
 
 #: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
@@ -1252,6 +1259,336 @@ def op_ripple_delete(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Marcadores (metadatos de la línea de tiempo: puntos de alineación del snap)
+# --------------------------------------------------------------------------- #
+
+
+def _next_marker_id(edit_project: EditProject) -> str:
+    """Id determinista para un marcador nuevo (``marker_<n>`` sin colisión)."""
+    n = len(edit_project.markers)
+    marker_id = f"marker_{n}"
+    while edit_project.marker_by_id(marker_id) is not None:
+        n += 1
+        marker_id = f"marker_{n}"
+    return marker_id
+
+
+def op_add_marker(edit_project: EditProject, params: dict) -> EditProject:
+    """Añade un marcador a la línea de tiempo (metadato; no afecta al render).
+
+    Params: ``t_s`` (>= 0, obligatorio) y, opcionales, ``label`` (str) y ``color`` (str).
+    El ``id`` es determinista (``marker_<n>``) salvo que se pase ``marker_id`` explícito
+    (debe no colisionar). Los marcadores los usa el snap del frontend como puntos de
+    alineación; el compilador NO los emite a ``inputProps`` (regresión).
+    """
+    result = _clone(edit_project)
+    t_s = _require_number(params, "t_s")
+    if t_s < 0:
+        raise EditOperationError("add_marker: t_s no puede ser negativo.")
+
+    label = params.get("label", "")
+    if label is not None and not isinstance(label, str):
+        raise EditOperationError("add_marker: 'label' debe ser str.")
+    color = params.get("color")
+    if color is not None and (not isinstance(color, str) or not color):
+        raise EditOperationError("add_marker: 'color' (str) no puede ser vacío.")
+
+    marker_id = params.get("marker_id")
+    if marker_id is not None and not isinstance(marker_id, str):
+        raise EditOperationError("add_marker: 'marker_id' debe ser str.")
+    if marker_id:
+        if result.marker_by_id(marker_id) is not None:
+            raise EditOperationError(f"add_marker: el marcador {marker_id!r} ya existe.")
+    else:
+        marker_id = _next_marker_id(result)
+
+    marker_kwargs: dict = {"id": marker_id, "t_s": round(float(t_s), 3)}
+    if label is not None:
+        marker_kwargs["label"] = label
+    if color is not None:
+        marker_kwargs["color"] = color
+    try:
+        marker = EditMarker.model_validate(marker_kwargs)
+    except Exception as exc:
+        raise EditOperationError(f"add_marker: {exc}") from exc
+    result.markers.append(marker)
+    return result
+
+
+def op_remove_marker(edit_project: EditProject, params: dict) -> EditProject:
+    """Elimina un marcador por ``marker_id``."""
+    result = _clone(edit_project)
+    marker_id = _require_str(params, "marker_id")
+    marker = result.marker_by_id(marker_id)
+    if marker is None:
+        raise EditOperationError(f"remove_marker: no existe el marcador {marker_id!r}.")
+    result.markers.remove(marker)
+    return result
+
+
+def op_set_marker(edit_project: EditProject, params: dict) -> EditProject:
+    """Edita un marcador existente (``t_s`` y/o ``label`` y/o ``color``).
+
+    Params: ``marker_id`` y cualquiera de ``t_s`` (>= 0), ``label`` (str), ``color``
+    (str no vacío). Los campos no indicados conservan su valor.
+    """
+    result = _clone(edit_project)
+    marker_id = _require_str(params, "marker_id")
+    marker = result.marker_by_id(marker_id)
+    if marker is None:
+        raise EditOperationError(f"set_marker: no existe el marcador {marker_id!r}.")
+
+    base = marker.model_dump()
+    if "t_s" in params:
+        t_s = _require_number(params, "t_s")
+        if t_s < 0:
+            raise EditOperationError("set_marker: t_s no puede ser negativo.")
+        base["t_s"] = round(float(t_s), 3)
+    if "label" in params:
+        value = params["label"]
+        if not isinstance(value, str):
+            raise EditOperationError("set_marker: 'label' debe ser str.")
+        base["label"] = value
+    if "color" in params:
+        value = params["color"]
+        if not isinstance(value, str) or not value:
+            raise EditOperationError("set_marker: 'color' (str) no puede ser vacío.")
+        base["color"] = value
+    try:
+        updated = EditMarker.model_validate(base)
+    except Exception as exc:
+        raise EditOperationError(f"set_marker: {exc}") from exc
+    index = result.markers.index(marker)
+    result.markers[index] = updated
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Selección múltiple: operaciones BATCH atómicas (un gesto = una Version)
+# --------------------------------------------------------------------------- #
+
+
+def _require_clip_ids(params: dict) -> list[str]:
+    """Valida y devuelve la lista ``clip_ids`` (no vacía, de strings, sin duplicados)."""
+    value = params.get("clip_ids")
+    if not isinstance(value, (list, tuple)) or not value:
+        raise EditOperationError(
+            "El parámetro 'clip_ids' (lista no vacía de ids) es obligatorio."
+        )
+    clip_ids: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise EditOperationError("'clip_ids' debe contener solo ids (str) no vacíos.")
+        if item not in seen:
+            seen.add(item)
+            clip_ids.append(item)
+    return clip_ids
+
+
+def op_batch_delete(edit_project: EditProject, params: dict) -> EditProject:
+    """Elimina VARIOS clips de forma ATÓMICA (todo o nada).
+
+    Params: ``clip_ids`` (lista no vacía). Primero valida que TODOS los clips existan y
+    que NINGUNA de sus pistas esté ``locked``; si algo falla, lanza ``EditOperationError``
+    sin mutar nada. Solo si la validación pasa se eliminan todos. Como una sola operación,
+    el endpoint ``/op`` crea UNA sola ``Version`` (undo revierte el gesto de golpe).
+    """
+    result = _clone(edit_project)
+    clip_ids = _require_clip_ids(params)
+
+    # Fase de validación (sin mutar): localiza cada clip y rechaza pistas bloqueadas.
+    targets: list[tuple[EditTrack, EditClip]] = []
+    for clip_id in clip_ids:
+        found = result.find_clip(clip_id)
+        if found is None:
+            raise EditOperationError(f"batch_delete: no existe el clip {clip_id!r}.")
+        track, clip = found
+        if track.locked:
+            raise EditOperationError(
+                f"batch_delete: la pista {track.id!r} del clip {clip_id!r} está bloqueada "
+                "(locked); desbloquéala para eliminar sus clips."
+            )
+        targets.append((track, clip))
+
+    # Fase de mutación (ya validado: no puede fallar a medias).
+    for track, clip in targets:
+        track.clips.remove(clip)
+    return result
+
+
+def op_batch_move(edit_project: EditProject, params: dict) -> EditProject:
+    """Desplaza VARIOS clips por el MISMO ``delta_s`` de forma ATÓMICA.
+
+    Params: ``clip_ids`` (lista no vacía) y ``delta_s`` (número, positivo o negativo).
+    Todos los clips se mueven el mismo delta, por lo que conservan sus offsets relativos.
+    Validaciones previas (sin mutar): todos los clips existen, ninguna pista está
+    ``locked`` y ningún ``start_s`` resultante baja de 0; si algo falla, lanza
+    ``EditOperationError`` sin efectos. Un batch = una op = UNA ``Version`` (undo de golpe).
+    """
+    result = _clone(edit_project)
+    clip_ids = _require_clip_ids(params)
+    delta_s = _require_number(params, "delta_s")
+
+    targets: list[EditClip] = []
+    for clip_id in clip_ids:
+        found = result.find_clip(clip_id)
+        if found is None:
+            raise EditOperationError(f"batch_move: no existe el clip {clip_id!r}.")
+        track, clip = found
+        if track.locked:
+            raise EditOperationError(
+                f"batch_move: la pista {track.id!r} del clip {clip_id!r} está bloqueada "
+                "(locked); desbloquéala para mover sus clips."
+            )
+        new_start = round(clip.start_s + delta_s, 3)
+        if new_start < 0:
+            raise EditOperationError(
+                f"batch_move: el clip {clip_id!r} quedaría en start_s={new_start} < 0."
+            )
+        targets.append(clip)
+
+    for clip in targets:
+        clip.start_s = round(clip.start_s + delta_s, 3)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Copiar/pegar atributos de un clip a otros (respetando el tipo del destino)
+# --------------------------------------------------------------------------- #
+
+#: Atributos copiables por ``op_copy_attributes`` y el ``kind`` de clip al que aplica cada
+#: uno. Un atributo solo se copia a un destino cuyo ``kind`` esté en su conjunto (p. ej. no
+#: se copia ``style`` de un subtítulo a un vídeo). NUNCA se copian id/start_s/duration_s/
+#: asset_id (posición y recurso son del destino).
+_COPYABLE_ATTRS: dict[str, tuple[TrackKind, ...]] = {
+    "transform": VISUAL_KINDS,
+    "transition": VISUAL_KINDS,
+    "gain": AUDIO_KINDS,
+    "fade": AUDIO_KINDS,
+    "style": ("subtitle",),
+    "title": ("title",),
+    "overlay": ("overlay",),
+    "speed": VISUAL_KINDS + AUDIO_KINDS,
+}
+
+
+def _copy_one_attr(source: EditClip, target: EditClip, attr: str) -> None:
+    """Copia UN atributo del ``source`` al ``target`` (copia profunda de submodelos)."""
+    if attr == "transform":
+        target.transform = (
+            source.transform.model_copy(deep=True) if source.transform else None
+        )
+    elif attr == "transition":
+        target.transition_in = (
+            source.transition_in.model_copy(deep=True) if source.transition_in else None
+        )
+        target.transition_out = (
+            source.transition_out.model_copy(deep=True) if source.transition_out else None
+        )
+    elif attr == "gain":
+        target.gain = source.gain
+    elif attr == "fade":
+        target.fade_in_s = source.fade_in_s
+        target.fade_out_s = source.fade_out_s
+    elif attr == "style":
+        target.style = source.style.model_copy(deep=True) if source.style else None
+    elif attr == "title":
+        target.title = source.title.model_copy(deep=True) if source.title else None
+        target.title_animation = (
+            source.title_animation.model_copy(deep=True)
+            if source.title_animation
+            else None
+        )
+    elif attr == "overlay":
+        target.overlay = source.overlay.model_copy(deep=True) if source.overlay else None
+    elif attr == "speed":
+        # ``speed`` aún no es un campo del modelo (llega en FEAT-006). Mientras tanto se
+        # acepta como atributo copiable pero es un no-op sobre el modelo actual, de modo
+        # que la superficie de la operación no cambie cuando se añada el campo.
+        pass
+
+
+def op_copy_attributes(edit_project: EditProject, params: dict) -> EditProject:
+    """Copia un conjunto de atributos de un clip origen a varios clips destino.
+
+    Params:
+    - ``source_clip_id`` (str): clip del que se copian los atributos.
+    - ``target_clip_ids`` (lista no vacía de str): clips a los que se pegan.
+    - ``attrs`` (lista no vacía ⊆ ``{transform, gain, fade, style, title, overlay,
+      transition, speed}``): atributos a copiar.
+
+    Compatibilidad de tipo (decisión documentada): cada atributo solo se copia a los
+    destinos cuyo ``kind`` lo admite (ver ``_COPYABLE_ATTRS``). Un atributo no aplicable al
+    tipo del destino se IGNORA en silencio (no falla), de modo que pegar "todo" sobre una
+    selección mixta copia a cada clip solo lo que le aplica. NUNCA se copian
+    ``id``/``start_s``/``duration_s``/``asset_id`` (posición y recurso son del destino).
+
+    La operación es atómica: valida que origen y destinos existan, que las pistas destino
+    no estén ``locked`` y que ``attrs`` sea válido ANTES de mutar; si algo falla lanza
+    ``EditOperationError`` sin efectos.
+    """
+    result = _clone(edit_project)
+    source_id = _require_str(params, "source_clip_id")
+
+    raw_targets = params.get("target_clip_ids")
+    if not isinstance(raw_targets, (list, tuple)) or not raw_targets:
+        raise EditOperationError(
+            "copy_attributes: 'target_clip_ids' (lista no vacía) es obligatorio."
+        )
+    attrs_param = params.get("attrs")
+    if not isinstance(attrs_param, (list, tuple)) or not attrs_param:
+        raise EditOperationError(
+            "copy_attributes: 'attrs' (lista no vacía) es obligatorio."
+        )
+    attrs: list[str] = []
+    for attr in attrs_param:
+        if not isinstance(attr, str) or attr not in _COPYABLE_ATTRS:
+            raise EditOperationError(
+                f"copy_attributes: atributo inválido {attr!r}. "
+                f"Disponibles: {', '.join(sorted(_COPYABLE_ATTRS))}."
+            )
+        if attr not in attrs:
+            attrs.append(attr)
+
+    source_found = result.find_clip(source_id)
+    if source_found is None:
+        raise EditOperationError(f"copy_attributes: no existe el clip origen {source_id!r}.")
+    source = source_found[1]
+
+    # Validación de destinos (sin mutar): existen, no están locked y no son el propio origen.
+    targets: list[EditClip] = []
+    seen: set[str] = set()
+    for target_id in raw_targets:
+        if not isinstance(target_id, str) or not target_id:
+            raise EditOperationError(
+                "copy_attributes: 'target_clip_ids' debe contener ids (str) no vacíos."
+            )
+        if target_id == source_id or target_id in seen:
+            continue
+        seen.add(target_id)
+        found = result.find_clip(target_id)
+        if found is None:
+            raise EditOperationError(
+                f"copy_attributes: no existe el clip destino {target_id!r}."
+            )
+        track, clip = found
+        if track.locked:
+            raise EditOperationError(
+                f"copy_attributes: la pista {track.id!r} del clip {target_id!r} está "
+                "bloqueada (locked)."
+            )
+        targets.append(clip)
+
+    # Mutación: a cada destino solo se le copian los atributos aplicables a su tipo.
+    for target in targets:
+        for attr in attrs:
+            if target.kind in _COPYABLE_ATTRS[attr]:
+                _copy_one_attr(source, target, attr)
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
@@ -1282,6 +1619,12 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "set_position": op_set_position,
     "set_track_flags": op_set_track_flags,
     "ripple_delete": op_ripple_delete,
+    "add_marker": op_add_marker,
+    "remove_marker": op_remove_marker,
+    "set_marker": op_set_marker,
+    "batch_delete": op_batch_delete,
+    "batch_move": op_batch_move,
+    "copy_attributes": op_copy_attributes,
 }
 
 

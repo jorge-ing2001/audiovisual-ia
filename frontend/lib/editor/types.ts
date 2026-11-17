@@ -215,11 +215,24 @@ export interface EditMeta {
   safe_bottom_frac: number;
 }
 
+// Marcador de la línea de tiempo (espejo de EditMarker en model.py). Es un METADATO del
+// proyecto: el frontend lo pinta sobre la regla y el snap lo usa como punto de alineación.
+// NO afecta al render (el compilador no lo emite a inputProps).
+export interface EditMarker {
+  id: string;
+  t_s: number;
+  label: string;
+  color: string;
+}
+
 export interface EditProject {
   kind: typeof EDIT_PROJECT_KIND;
   project_id: number;
   meta: EditMeta;
   tracks: EditTrack[];
+  // Marcadores de la línea de tiempo. Default [] (regresión: un documento previo sin el
+  // campo se trata igual). Metadatos para el snap; no entran en inputProps.
+  markers: EditMarker[];
   source_timeline_version: number | null;
 }
 

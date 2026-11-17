@@ -471,6 +471,95 @@ export function rippleDeleteClip(
   return applyEditOp(projectId, "ripple_delete", { clip_id: clipId });
 }
 
+/**
+ * Añade un marcador a la línea de tiempo (operación `add_marker`, FEAT-003).
+ *
+ * Los marcadores son metadatos (no afectan al render): el frontend los pinta en la regla
+ * y el snap los usa como puntos de alineación. `t_s` es el instante (>= 0); `label`/`color`
+ * son opcionales.
+ */
+export function addMarker(
+  projectId: number,
+  t_s: number,
+  opts: { label?: string; color?: string } = {},
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "add_marker", { t_s, ...opts });
+}
+
+/** Edita un marcador existente (operación `set_marker`, FEAT-003). */
+export function setMarker(
+  projectId: number,
+  markerId: string,
+  fields: { t_s?: number; label?: string; color?: string },
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_marker", { marker_id: markerId, ...fields });
+}
+
+/** Elimina un marcador por id (operación `remove_marker`, FEAT-003). */
+export function removeMarker(
+  projectId: number,
+  markerId: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "remove_marker", { marker_id: markerId });
+}
+
+/**
+ * Elimina VARIOS clips de forma atómica (operación `batch_delete`, FEAT-004).
+ *
+ * Todo o nada: si algún clip no existe o su pista está `locked`, falla entera (422) sin
+ * mutar. Como una sola op, el gesto produce UNA Version (undo lo revierte de golpe).
+ */
+export function batchDeleteClips(
+  projectId: number,
+  clipIds: string[],
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "batch_delete", { clip_ids: clipIds });
+}
+
+/**
+ * Desplaza VARIOS clips por el mismo `delta_s` (operación `batch_move`, FEAT-004).
+ *
+ * Conserva los offsets relativos; valida start_s >= 0 resultante y pistas no bloqueadas.
+ * Atómica: una op = una Version. El `delta_s` debe venir ya ajustado por el snap si procede.
+ */
+export function batchMoveClips(
+  projectId: number,
+  clipIds: string[],
+  deltaS: number,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "batch_move", { clip_ids: clipIds, delta_s: deltaS });
+}
+
+/** Atributos copiables por `copyAttributes` (espejo de `_COPYABLE_ATTRS` del backend). */
+export type CopyableAttr =
+  | "transform"
+  | "gain"
+  | "fade"
+  | "style"
+  | "title"
+  | "overlay"
+  | "transition"
+  | "speed";
+
+/**
+ * Copia atributos de un clip a otros (operación `copy_attributes`, FEAT-004).
+ *
+ * Copia solo los atributos compatibles con el TIPO de cada destino (los no aplicables se
+ * ignoran); nunca copia id/start_s/duration_s/asset_id. Atómica: una op = una Version.
+ */
+export function copyAttributes(
+  projectId: number,
+  sourceClipId: string,
+  targetClipIds: string[],
+  attrs: CopyableAttr[],
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "copy_attributes", {
+    source_clip_id: sourceClipId,
+    target_clip_ids: targetClipIds,
+    attrs,
+  });
+}
+
 /** Deshace la última edición (POST .../editor/undo). 409 si no hay nada que deshacer. */
 export function undoEdit(projectId: number): Promise<EditProjectRead> {
   return request<EditProjectRead>(`/projects/${projectId}/editor/undo`, {

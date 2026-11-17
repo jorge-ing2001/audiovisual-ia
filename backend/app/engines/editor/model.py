@@ -31,6 +31,7 @@ __all__ = [
     "TitleAnimation",
     "TitleStyle",
     "OverlayStyle",
+    "EditMarker",
     "EditClip",
     "EditTrack",
     "EditMeta",
@@ -296,6 +297,33 @@ class OverlayStyle(BaseModel):
         return value
 
 
+class EditMarker(BaseModel):
+    """Marcador de la línea de tiempo (metadato del proyecto, NO afecta al render).
+
+    Un marcador es un punto etiquetado de la línea de tiempo (``t_s``, ``label``,
+    ``color``) que el frontend pinta sobre la regla/timeline y que el **snap** usa como
+    punto de alineación (además de los bordes de clip). Es un METADATO del proyecto: el
+    compilador (``compile.py``) NO lo emite a ``inputProps``/``MixTrack``, de modo que un
+    ``EditProject`` con o sin ``markers`` produce EXACTAMENTE el mismo render (regresión).
+
+    Ver ``docs/EDITOR-ADVANCED.md`` §3.4 y §8 (snap).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    t_s: float = 0.0
+    label: str = ""
+    color: str = "#38bdf8"
+
+    @field_validator("t_s")
+    @classmethod
+    def _t_non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("marker.t_s no puede ser negativo")
+        return value
+
+
 class EditClip(BaseModel):
     """Un clip posicionado en una pista del editor.
 
@@ -473,6 +501,10 @@ class EditProject(BaseModel):
     project_id: int
     meta: EditMeta
     tracks: list[EditTrack] = Field(default_factory=list)
+    # Marcadores de la línea de tiempo (metadatos para el snap del frontend). Default []:
+    # un EditProject previo sin ``markers`` valida igual y compila IGUAL (regresión §3.4);
+    # el compilador NO los emite a inputProps (son metadatos, no afectan al render).
+    markers: list["EditMarker"] = Field(default_factory=list)
     source_timeline_version: int | None = None
 
     @property
@@ -498,4 +530,11 @@ class EditProject(BaseModel):
             for clip in track.clips:
                 if clip.id == clip_id:
                     return track, clip
+        return None
+
+    def marker_by_id(self, marker_id: str) -> "EditMarker | None":
+        """Devuelve el marcador con ese id (o ``None``)."""
+        for marker in self.markers:
+            if marker.id == marker_id:
+                return marker
         return None

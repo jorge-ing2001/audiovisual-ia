@@ -200,6 +200,56 @@ def test_history_lists_versions(client):
     assert sum(1 for r in rows if r["active"]) == 1
 
 
+def test_batch_gesture_is_single_version(client):
+    """FEAT-004: un gesto batch vía /op crea UNA sola Version (undo lo revierte de golpe).
+
+    Se añaden dos clips de imagen a una pista, se mueven ambos con batch_move en un solo
+    /op y se comprueba que (a) solo hay una Version nueva respecto al estado previo y (b)
+    un único undo revierte el movimiento de ambos clips a la vez.
+    """
+    project_id = _make_project_with_scene(client)
+    opened = client.post(f"/projects/{project_id}/editor/open").json()
+    image_track = next(
+        t for t in opened["edit_project"]["tracks"] if t["kind"] == "image"
+    )
+    img_clip_id = image_track["clips"][0]["id"]
+
+    # Duplica para tener dos clips de imagen (dos ops => dos Versions adicionales).
+    client.post(
+        f"/projects/{project_id}/editor/op",
+        json={"op": "duplicate", "params": {"clip_id": img_clip_id}},
+    )
+    before = client.get(f"/projects/{project_id}/editor").json()["edit_project"]
+    img_clips = next(t for t in before["tracks"] if t["kind"] == "image")["clips"]
+    ids = [c["id"] for c in img_clips]
+    starts_before = {c["id"]: c["start_s"] for c in img_clips}
+    versions_before = len(_version_rows(project_id))
+
+    # UN gesto batch (un /op) que mueve ambos clips.
+    resp = client.post(
+        f"/projects/{project_id}/editor/op",
+        json={"op": "batch_move", "params": {"clip_ids": ids, "delta_s": 1.5}},
+    )
+    assert resp.status_code == 200
+    # Exactamente UNA Version nueva por el gesto batch.
+    assert len(_version_rows(project_id)) == versions_before + 1
+
+    moved = next(
+        t for t in resp.json()["edit_project"]["tracks"] if t["kind"] == "image"
+    )["clips"]
+    for c in moved:
+        assert c["start_s"] == round(starts_before[c["id"]] + 1.5, 3)
+
+    # Un solo undo revierte el movimiento de AMBOS clips de golpe.
+    undo = client.post(f"/projects/{project_id}/editor/undo")
+    assert undo.status_code == 200
+    reverted = next(
+        t for t in undo.json()["edit_project"]["tracks"] if t["kind"] == "image"
+    )["clips"]
+    for c in reverted:
+        assert c["start_s"] == starts_before[c["id"]]
+
+
 def test_export_requires_open(client):
     project_id = _make_project_with_scene(client)
     assert client.post(f"/projects/{project_id}/editor/export").status_code == 409
