@@ -23,6 +23,7 @@ import type {
   EditTransitionProps,
   EditVisualClipProps,
 } from "./types";
+import { loadUsedFonts } from "./fonts";
 
 // Composición MULTIPISTA del editor (FEAT-003). Es la contraparte de
 // `TimelineComposition` (que NO se toca) y se comparte entre:
@@ -518,6 +519,14 @@ export const EditComposition: React.FC<EditProps> = ({
 }) => {
   const { fps } = useVideoConfig();
   const clamp1 = (n: number) => Math.max(1, Math.round(n));
+
+  // Carga las tipografías del catálogo usadas por subtítulos/títulos ANTES de pintar.
+  // Cada loadFont registra un delayRender interno, de modo que el render headless espera
+  // a que la fuente esté lista y preview/export muestran la MISMA tipografía (FEAT-007).
+  loadUsedFonts([
+    ...(subtitleClips ?? []).map((c) => c.style?.fontFamily),
+    ...(titleClips ?? []).map((c) => c.style?.fontFamily),
+  ]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000000" }}>

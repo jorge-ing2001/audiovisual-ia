@@ -54,6 +54,31 @@ The projects/<slug> layout, video.json and the Audacity .aup3 parser of voz.py a
 reused.
 
 -------------------------------------------------------------------------------
+Google Fonts (SIL Open Font License / Apache 2.0) — Editor typography (FEAT-007)
+-------------------------------------------------------------------------------
+
+The editor's typography catalogue (FONT_CATALOG, mirrored in remotion/src/fonts.ts and
+frontend/lib/editor/fonts.ts) offers a CLOSED set of free-licensed font families, loaded
+at render/preview time by the @remotion/google-fonts loader (the fonts are fetched from
+Google's CDN; no .ttf/.woff2 files are committed to this repository). The inspector only
+exposes these families (a <select>, never free text), so preview (Remotion Player) and
+export (headless Chromium) render the SAME typeface. Catalogue and licenses:
+
+  - Inter          SIL Open Font License 1.1
+  - Montserrat     SIL Open Font License 1.1
+  - Roboto         Apache License 2.0
+  - Oswald         SIL Open Font License 1.1
+  - Bebas Neue     SIL Open Font License 1.1
+  - Anton          SIL Open Font License 1.1
+  - Lobster        SIL Open Font License 1.1
+
+The catalogue is closed by design: only free-licensed fonts (OFL / Apache 2.0), never
+proprietary families. If an environment cannot reach Google Fonts, the catalogue may fall
+back to local .woff2 files bundled under remotion/public/fonts/ (only fonts whose license
+permits redistribution would be committed, recorded here). No local font files are bundled
+in this repository at present.
+
+-------------------------------------------------------------------------------
 3D assets (Mixamo / CC0) and Blender (GPL) — Phase 3 (MVP-3D)
 -------------------------------------------------------------------------------
 

@@ -33,6 +33,7 @@ import type {
   EditTransitionInput,
   EditVisualClipInput,
 } from "@/lib/editor/compose";
+import { loadUsedFonts } from "@/lib/editor/fonts";
 
 const blackStroke =
   "-3px -3px 0 #000, 3px -3px 0 #000, -3px 3px 0 #000, 3px 3px 0 #000, " +
@@ -484,6 +485,14 @@ export const EditComposition: React.FC<EditInputProps> = ({
 }) => {
   useVideoConfig();
   const clamp1 = (n: number) => Math.max(1, Math.round(n));
+
+  // Carga las tipografías del catálogo usadas por subtítulos/títulos ANTES de pintar, igual
+  // que el espejo de export (FEAT-007): el Player espera la fuente vía el delayRender del
+  // loader, de modo que el preview muestra la MISMA tipografía que el MP4 exportado.
+  loadUsedFonts([
+    ...(subtitleClips ?? []).map((c) => c.style?.fontFamily),
+    ...(titleClips ?? []).map((c) => c.style?.fontFamily),
+  ]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000000" }}>
