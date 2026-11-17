@@ -25,6 +25,15 @@ export const VISUAL_RENDER_KINDS: readonly TrackKind[] = [
   "title",
   "overlay",
 ];
+// Pistas VISUALES a las que afecta `hidden` (se omiten en preview/export). Espejo de
+// VISUAL_HIDE_KINDS en model.py. Incluye subtitle (contenido visual).
+export const VISUAL_HIDE_KINDS: readonly TrackKind[] = [
+  "video",
+  "image",
+  "title",
+  "overlay",
+  "subtitle",
+];
 export const AUDIO_KINDS: readonly TrackKind[] = ["voice", "music", "sfx"];
 
 export interface VisualTransform {
@@ -141,6 +150,21 @@ export interface OverlayStyle {
   tile: boolean;
 }
 
+// Control de velocidad de un clip (espejo de ClipSpeed en model.py). rate>0 (1.0=normal),
+// reverse solo en vídeo. Default neutro: speed=null ⇔ rate=1.0, reverse=false.
+export interface ClipSpeed {
+  rate: number;
+  reverse: boolean;
+}
+
+// Congelación de fotograma de un clip visual (espejo de ClipFreeze en model.py). at_s es
+// el instante del origen que se congela; hold_s la duración de la congelación. Default
+// neutro: freeze=null (sin congelación).
+export interface ClipFreeze {
+  at_s: number;
+  hold_s: number;
+}
+
 export interface EditClip {
   id: string;
   track_id: string;
@@ -175,6 +199,15 @@ export interface EditClip {
 
   // Overlay (imagen/logo/marca de agua). Reutiliza `asset_id`.
   overlay: OverlayStyle | null;
+
+  // Detach de audio (FEAT-005): en un clip de vídeo indica que su pista de audio de origen
+  // no suena (el audio se oye por el clip voice desvinculado). Default neutro (false).
+  mute_source_audio: boolean;
+
+  // Velocidad y congelación (FEAT-006). Defaults neutros (null): un clip previo sin estos
+  // campos se trata igual que antes (el compilador solo los emite si difieren del default).
+  speed: ClipSpeed | null;
+  freeze: ClipFreeze | null;
 }
 
 export interface EditTrack {
@@ -182,8 +215,15 @@ export interface EditTrack {
   kind: TrackKind;
   name: string;
   order: number;
+  // Banderas de pista (espejo de EditTrack en model.py):
+  // - muted: silencia AUDIO (voice/music/sfx) en preview/export.
+  // - hidden: oculta una pista VISUAL (video/image/title/overlay/subtitle) en
+  //   preview/export (no en el timeline). Default neutro (false): un documento previo sin
+  //   el campo se trata igual que antes (regresión).
+  // - locked: protege la edición; las operaciones que mutan clips la rechazan.
   muted: boolean;
   locked: boolean;
+  hidden: boolean;
   volume: number;
   clips: EditClip[];
 }
@@ -199,12 +239,39 @@ export interface EditMeta {
   safe_bottom_frac: number;
 }
 
+// Marcador de la línea de tiempo (espejo de EditMarker en model.py). Es un METADATO del
+// proyecto: el frontend lo pinta sobre la regla y el snap lo usa como punto de alineación.
+// NO afecta al render (el compilador no lo emite a inputProps).
+export interface EditMarker {
+  id: string;
+  t_s: number;
+  label: string;
+  color: string;
+}
+
 export interface EditProject {
   kind: typeof EDIT_PROJECT_KIND;
   project_id: number;
   meta: EditMeta;
   tracks: EditTrack[];
+  // Marcadores de la línea de tiempo. Default [] (regresión: un documento previo sin el
+  // campo se trata igual). Metadatos para el snap; no entran en inputProps.
+  markers: EditMarker[];
+  // Secuencias múltiples (FEAT-008). Una secuencia es un EditProject independiente
+  // identificado por `sequence_id` (default "main"/"Principal"). Son metadatos de
+  // persistencia (el compilador NO los emite): un documento previo sin estos campos es la
+  // secuencia `main` y su render/inputProps no cambia (regresión, espejo del backend).
+  sequence_id: string;
+  sequence_name: string;
   source_timeline_version: number | null;
+}
+
+// Entrada del catálogo de secuencias (GET .../editor/sequences).
+export interface EditSequence {
+  sequence_id: string;
+  sequence_name: string;
+  duration_s: number;
+  version: number;
 }
 
 // Respuesta de los endpoints del editor (EditProjectRead): el documento completo

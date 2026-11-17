@@ -14,21 +14,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ApiError,
+  addMarker,
+  addMediaClip,
   applyEditOp,
   assetDownloadUrl,
+  batchDeleteClips,
+  batchMoveClips,
+  copyAttributes,
+  createSequence,
   enqueueEditExport,
   exportSubtitles,
   getEditProject,
   importSubtitles,
   latestEditExport,
   listAssets,
+  listSequences,
   openEditor,
   putEditProject,
   redoEdit,
+  removeMarker,
   undoEdit,
+  uploadEditMedia,
   uploadOverlay,
   videoDownloadUrl,
   type Asset,
+  type CopyableAttr,
+  type EditMediaRole,
   type Job,
   type SubtitleFormat,
 } from "@/lib/api";
@@ -42,15 +53,20 @@ import {
   dragToSubtitleOffset,
   type PlayerRect,
 } from "@/lib/editor/drag";
+import { collectSnapCandidates, snapTime } from "@/lib/editor/snap";
 import {
   editProjectDurationS,
   findClip,
   isAudioKind,
   isVisualKind,
+  VISUAL_HIDE_KINDS,
   type EditClip,
+  type EditMarker,
   type EditMeta,
   type EditProject,
+  type EditSequence,
   type EditTrack,
+  type TrackKind,
 } from "@/lib/editor/types";
 import EditComposition from "@/components/remotion/EditComposition";
 import JobProgress from "@/components/JobProgress";
@@ -162,7 +178,21 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // Selección múltiple (FEAT-004): además del clip activo (selectedClipId, que alimenta el
+  // inspector) se guarda el conjunto de clips seleccionados para las operaciones batch. El
+  // clip activo siempre está incluido en la selección.
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
+  // Ajuste magnético (snap) on/off (FEAT-003). Cuando está activo, los movimientos batch
+  // de la barra de selección se pegan al borde de clip/marcador más cercano.
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [assets, setAssets] = useState<Asset[]>([]);
+  // Secuencias múltiples (FEAT-008). `activeSequence` es la secuencia sobre la que operan
+  // TODAS las llamadas del editor; por defecto "main" (regresión: sin tocar el selector, el
+  // comportamiento es el de siempre). `sequences` es el catálogo para el selector.
+  const [activeSequence, setActiveSequence] = useState<string>("main");
+  const [sequences, setSequences] = useState<EditSequence[]>([]);
+  // Importación de medios por drag&drop (FEAT-007): estado del drop en curso y errores.
+  const [mediaDropBusy, setMediaDropBusy] = useState(false);
 
   // Arrastre en curso del clip seleccionado sobre el preview (FEAT-008). Mientras el
   // usuario arrastra, guardamos aquí la posición provisional para re-renderizar el Player
@@ -176,11 +206,22 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
 
   const playerRef = useRef<PlayerRef>(null);
 
-  // Al montar: abre el editor (idempotente) y carga el EditProject + los assets.
+  // Carga el catálogo de secuencias (para el selector). Auxiliar: si falla no bloquea.
+  const refreshSequences = useCallback(() => {
+    listSequences(projectId)
+      .then((list) => setSequences(list))
+      .catch(() => {
+        /* el catálogo es auxiliar */
+      });
+  }, [projectId]);
+
+  // Al montar / al cambiar de secuencia activa: abre el editor de ESA secuencia
+  // (idempotente) y carga el EditProject + los assets. Con activeSequence="main" el
+  // comportamiento es el de siempre (regresión).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    openEditor(projectId)
+    openEditor(projectId, activeSequence)
       .then((read) => {
         if (cancelled) return;
         setProject(read.edit_project);
@@ -189,7 +230,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         // Si ya estaba abierto, un GET sirve igual.
         if (err instanceof ApiError) {
           try {
-            const read = await getEditProject(projectId);
+            const read = await getEditProject(projectId, activeSequence);
             if (!cancelled) setProject(read.edit_project);
             return;
           } catch {
@@ -213,10 +254,12 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         /* la lista de assets es auxiliar (reemplazo de recurso) */
       });
 
+    if (!cancelled) refreshSequences();
+
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, activeSequence, refreshSequences]);
 
   // Detecta el último export previo (si lo hay) para rehabilitar la descarga.
   useEffect(() => {
@@ -295,6 +338,32 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     return null;
   }, [selected]);
 
+  // Selección en el timeline con modificadores (FEAT-004): click simple reemplaza la
+  // selección; shift/ctrl/meta alternan el clip en la selección múltiple. El último clic
+  // fija el clip activo (inspector). La selección se recorta a los clips que aún existen.
+  const handleSelectClip = useCallback(
+    (clipId: string, additive = false) => {
+      setSelectedClipId(clipId);
+      setSelectedClipIds((prev) => {
+        if (!additive) return [clipId];
+        if (prev.includes(clipId)) return prev.filter((id) => id !== clipId);
+        return [...prev, clipId];
+      });
+    },
+    [],
+  );
+
+  // Clips seleccionados que todavía existen en el documento (robusto a borrados/undo).
+  const selectedClips = useMemo(() => {
+    if (!project) return [] as { track: EditTrack; clip: EditClip }[];
+    const out: { track: EditTrack; clip: EditClip }[] = [];
+    for (const id of selectedClipIds) {
+      const found = findClip(project, id);
+      if (found) out.push(found);
+    }
+    return out;
+  }, [project, selectedClipIds]);
+
   // ---- helpers de edición (todos pegan al backend y refrescan el estado) ---- //
 
   const runOp = useCallback(
@@ -302,7 +371,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await applyEditOp(projectId, op, params);
+        const read = await applyEditOp(projectId, op, params, activeSequence);
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -312,7 +381,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [projectId],
+    [projectId, activeSequence],
   );
 
   // Edición de campos sin operación dedicada (transform, estilo de subtítulo, reemplazo
@@ -328,7 +397,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await putEditProject(projectId, next);
+        const read = await putEditProject(projectId, next, activeSequence);
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -338,14 +407,150 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [project, projectId],
+    [project, projectId, activeSequence],
+  );
+
+  // ------- selección múltiple: operaciones batch (FEAT-004) ------- //
+
+  // Elimina la selección entera en UN gesto (op batch_delete => una Version). Limpia la
+  // selección tras aplicar.
+  const handleBatchDelete = useCallback(async () => {
+    const ids = selectedClips.map((s) => s.clip.id);
+    if (ids.length === 0) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const read = await batchDeleteClips(projectId, ids, activeSequence);
+      setProject(read.edit_project);
+      setSelectedClipIds([]);
+      setSelectedClipId(null);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo eliminar la selección",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, selectedClips, activeSequence]);
+
+  // Desplaza la selección por delta_s en UN gesto (op batch_move => una Version). Si el
+  // snap está activo, ajusta el destino del clip MÁS TEMPRANO al borde/marcador más cercano
+  // y aplica ese delta real a toda la selección (conserva offsets relativos).
+  const handleBatchMove = useCallback(
+    async (deltaS: number) => {
+      if (!project || selectedClips.length === 0) return;
+      const ids = selectedClips.map((s) => s.clip.id);
+      let delta = deltaS;
+      if (snapEnabled) {
+        const anchor = selectedClips.reduce(
+          (min, s) => Math.min(min, s.clip.start_s),
+          Infinity,
+        );
+        const candidates = collectSnapCandidates(
+          project,
+          ids.length === 1 ? ids[0] : null,
+        );
+        const snapped = snapTime(anchor + deltaS, candidates, 0.25);
+        delta = Math.round((snapped - anchor) * 1000) / 1000;
+      }
+      // No permitir que ningún clip cruce a negativo (lo valida también el backend).
+      const minStart = selectedClips.reduce(
+        (min, s) => Math.min(min, s.clip.start_s),
+        Infinity,
+      );
+      if (minStart + delta < 0) delta = -minStart;
+      if (delta === 0) return;
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await batchMoveClips(projectId, ids, delta, activeSequence);
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudo mover la selección",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [project, projectId, selectedClips, snapEnabled, activeSequence],
+  );
+
+  // Copia los atributos del clip activo a los demás seleccionados (op copy_attributes =>
+  // una Version). El backend copia a cada destino solo lo compatible con su tipo.
+  const handleCopyAttributes = useCallback(
+    async (attrs: CopyableAttr[]) => {
+      if (!selectedClipId) return;
+      const targets = selectedClips
+        .map((s) => s.clip.id)
+        .filter((id) => id !== selectedClipId);
+      if (targets.length === 0 || attrs.length === 0) return;
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await copyAttributes(
+          projectId,
+          selectedClipId,
+          targets,
+          attrs,
+          activeSequence,
+        );
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudieron copiar los atributos",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, selectedClipId, selectedClips, activeSequence],
+  );
+
+  // ------- marcadores (FEAT-003) ------- //
+
+  // Añade un marcador en el instante actual del Player (o en 0 si no hay posición).
+  const handleAddMarker = useCallback(async () => {
+    const frame = playerRef.current?.getCurrentFrame() ?? 0;
+    const fps = project?.meta.fps ?? 30;
+    const t_s = Math.max(0, Math.round((frame / fps) * 1000) / 1000);
+    setBusy(true);
+    setActionError(null);
+    try {
+      const read = await addMarker(projectId, t_s, {}, activeSequence);
+      setProject(read.edit_project);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo añadir el marcador",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [project, projectId, activeSequence]);
+
+  const handleRemoveMarker = useCallback(
+    async (markerId: string) => {
+      setBusy(true);
+      setActionError(null);
+      try {
+        const read = await removeMarker(projectId, markerId, activeSequence);
+        setProject(read.edit_project);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError ? err.message : "No se pudo quitar el marcador",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, activeSequence],
   );
 
   const handleUndo = useCallback(async () => {
     setBusy(true);
     setActionError(null);
     try {
-      const read = await undoEdit(projectId);
+      const read = await undoEdit(projectId, activeSequence);
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -354,13 +559,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, activeSequence]);
 
   const handleRedo = useCallback(async () => {
     setBusy(true);
     setActionError(null);
     try {
-      const read = await redoEdit(projectId);
+      const read = await redoEdit(projectId, activeSequence);
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -369,14 +574,14 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, activeSequence]);
 
   const handleExport = useCallback(async () => {
     setBusy(true);
     setActionError(null);
     setExportReady(false);
     try {
-      const res = await enqueueEditExport(projectId);
+      const res = await enqueueEditExport(projectId, activeSequence);
       setExportJobId(res.job_id);
     } catch (err) {
       setActionError(
@@ -385,7 +590,113 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, activeSequence]);
+
+  // ------- secuencias (FEAT-008) ------- //
+
+  // Crea una secuencia nueva duplicando la activa como punto de partida y conmuta a ella.
+  const handleCreateSequence = useCallback(async () => {
+    const name = window.prompt(
+      "Nombre de la nueva secuencia (variante del vídeo):",
+      "Variante",
+    );
+    if (name === null) return;
+    const trimmed = name.trim() || "Variante";
+    // id determinista y seguro a partir del nombre (sin colisión con las existentes).
+    const slugBase =
+      trimmed
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "seq";
+    const existing = new Set(sequences.map((s) => s.sequence_id));
+    let sequenceId = slugBase;
+    let n = 2;
+    while (existing.has(sequenceId)) {
+      sequenceId = `${slugBase}_${n}`;
+      n += 1;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await createSequence(projectId, sequenceId, {
+        name: trimmed,
+        from: "active",
+        baseSequence: activeSequence,
+      });
+      refreshSequences();
+      setActiveSequence(sequenceId); // conmuta y recarga vía el efecto
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo crear la secuencia",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, activeSequence, sequences, refreshSequences]);
+
+  // ------- importar medios por drag&drop (FEAT-007) ------- //
+
+  // Al soltar un archivo del explorador sobre una pista: sube el medio (uploadEditMedia) y
+  // coloca el clip en el start_s de la posición de drop (op add_media_clip), integrando el
+  // snap de FEAT-003 (el start_s se ajusta al borde/marcador más cercano si el snap está
+  // activo). El `role` de audio se deriva del kind de la pista (voice/music/sfx).
+  const handleDropMedia = useCallback(
+    async (track: EditTrack, rawStartS: number, file: File) => {
+      if (!project) return;
+      // El kind del clip debe casar con el de la pista (lo valida también el backend).
+      const kind = track.kind as TrackKind;
+      const role: EditMediaRole | undefined = isAudioKind(kind)
+        ? (kind as EditMediaRole)
+        : undefined;
+
+      // Snap del start_s a los bordes de clip/marcadores (FEAT-003).
+      let startS = Math.max(0, rawStartS);
+      if (snapEnabled) {
+        const candidates = collectSnapCandidates(project, null);
+        startS = Math.max(0, Math.round(snapTime(startS, candidates, 0.25) * 1000) / 1000);
+      }
+
+      setMediaDropBusy(true);
+      setBusy(true);
+      setActionError(null);
+      try {
+        const asset = await uploadEditMedia(projectId, file, role);
+        const sourceDuration =
+          typeof asset.meta?.duration_s === "number"
+            ? (asset.meta.duration_s as number)
+            : undefined;
+        // Duración en la línea de tiempo: la del origen (audio/vídeo) o 3s para imagen.
+        const durationS =
+          sourceDuration && sourceDuration > 0 ? sourceDuration : 3.0;
+        const read = await addMediaClip(
+          projectId,
+          {
+            trackId: track.id,
+            assetId: asset.id,
+            startS,
+            durationS,
+            kind,
+            sourceDurationS: sourceDuration,
+          },
+          activeSequence,
+        );
+        setProject(read.edit_project);
+        setAssets((prev) => [...prev, asset]);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError
+            ? err.message
+            : "No se pudo importar el medio soltado",
+        );
+      } finally {
+        setMediaDropBusy(false);
+        setBusy(false);
+      }
+    },
+    [project, projectId, snapEnabled, activeSequence],
+  );
 
   // Import/export de subtítulos (FEAT-003): descarga el fichero o sube uno nuevo que
   // reemplaza/añade la pista subtitle (crea Version → undo/redo lo recoge).
@@ -427,6 +738,10 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     },
     [projectId],
   );
+  // Nota: la importación de subtítulos opera sobre la secuencia activa a través del
+  // EditProject activo del backend; no necesita el parámetro `sequence` explícito porque
+  // el endpoint actúa sobre `main` por defecto (regresión); las secuencias múltiples usan
+  // las operaciones del editor que sí lo pasan.
 
   // Cambio de formato del proyecto (9:16/16:9/1:1) vía la op pura set_format, que fija
   // resolución + zonas seguras en meta (afecta al encuadre del preview y del export).
@@ -445,23 +760,30 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       let current = project;
       let titleTrack = current.tracks.find((t) => t.kind === "title");
       if (!titleTrack) {
-        const read = await applyEditOp(projectId, "add_track", {
-          kind: "title",
-          name: "Títulos",
-        });
+        const read = await applyEditOp(
+          projectId,
+          "add_track",
+          { kind: "title", name: "Títulos" },
+          activeSequence,
+        );
         current = read.edit_project;
         titleTrack = current.tracks.find((t) => t.kind === "title");
       }
       if (!titleTrack) throw new ApiError(0, "No se pudo crear la pista de títulos.");
       const start = editProjectDurationS(current) > 0 ? 0 : 0;
-      const read = await applyEditOp(projectId, "add_title", {
-        track_id: titleTrack.id,
-        text: "Título",
-        start_s: start,
-        duration_s: 3.0,
-        title: { kind: "intro" },
-        animation: { type: "fade" },
-      });
+      const read = await applyEditOp(
+        projectId,
+        "add_title",
+        {
+          track_id: titleTrack.id,
+          text: "Título",
+          start_s: start,
+          duration_s: 3.0,
+          title: { kind: "intro" },
+          animation: { type: "fade" },
+        },
+        activeSequence,
+      );
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -470,7 +792,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [project, projectId]);
+  }, [project, projectId, activeSequence]);
 
   // Subir un logo/overlay (FEAT-006): sube la imagen (uploadOverlay), crea la pista
   // `overlay` si no existe y añade un clip de overlay con el asset_id devuelto.
@@ -485,22 +807,29 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         let current = project;
         let overlayTrack = current.tracks.find((t) => t.kind === "overlay");
         if (!overlayTrack) {
-          const read = await applyEditOp(projectId, "add_track", {
-            kind: "overlay",
-            name: "Overlays",
-          });
+          const read = await applyEditOp(
+            projectId,
+            "add_track",
+            { kind: "overlay", name: "Overlays" },
+            activeSequence,
+          );
           current = read.edit_project;
           overlayTrack = current.tracks.find((t) => t.kind === "overlay");
         }
         if (!overlayTrack)
           throw new ApiError(0, "No se pudo crear la pista de overlays.");
         const duration = Math.max(1, editProjectDurationS(current) || 5);
-        const read = await applyEditOp(projectId, "add_overlay", {
-          track_id: overlayTrack.id,
-          asset_id: asset.id,
-          start_s: 0,
-          duration_s: duration,
-        });
+        const read = await applyEditOp(
+          projectId,
+          "add_overlay",
+          {
+            track_id: overlayTrack.id,
+            asset_id: asset.id,
+            start_s: 0,
+            duration_s: duration,
+          },
+          activeSequence,
+        );
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -510,7 +839,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [project, projectId],
+    [project, projectId, activeSequence],
   );
 
   // --------------------- drag&drop de posición (FEAT-008) --------------------- //
@@ -626,6 +955,58 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
           <h1 className="text-xl font-bold text-neutral-100">Editor de vídeo</h1>
         </div>
         <div className="flex items-center gap-2">
+          {/* Selector de secuencia activa (FEAT-008): variantes del vídeo con historiales
+              undo/redo independientes. Cambiar de secuencia recarga su EditProject. */}
+          <div
+            className="flex items-center gap-1"
+            title="Secuencia activa (variante del vídeo). Cada una tiene su propio historial."
+          >
+            <span className="text-xs text-neutral-500">Secuencia</span>
+            <select
+              value={activeSequence}
+              disabled={busy}
+              onChange={(e) => setActiveSequence(e.target.value)}
+              className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-200 disabled:opacity-50"
+            >
+              {(sequences.length > 0
+                ? sequences
+                : [{ sequence_id: "main", sequence_name: "Principal" } as EditSequence]
+              ).map((s) => (
+                <option key={s.sequence_id} value={s.sequence_id}>
+                  {s.sequence_name || s.sequence_id}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleCreateSequence()}
+              disabled={busy}
+              title="Crear una secuencia nueva duplicando la activa"
+              className="rounded-md bg-neutral-800 px-2 py-1.5 text-sm text-neutral-300 hover:text-neutral-100 disabled:opacity-50"
+            >
+              ＋ Secuencia
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSnapEnabled((v) => !v)}
+            aria-pressed={snapEnabled}
+            title="Ajuste magnético: pega los movimientos a bordes de clip y marcadores"
+            className={`rounded-md px-2.5 py-1.5 text-sm transition-colors ${
+              snapEnabled
+                ? "bg-emerald-500/20 text-emerald-300"
+                : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+            }`}
+          >
+            🧲 Snap {snapEnabled ? "on" : "off"}
+          </button>
+          <Button
+            variant="secondary"
+            onClick={() => void handleAddMarker()}
+            loading={busy}
+          >
+            ＋ Marcador
+          </Button>
           <Button variant="secondary" onClick={() => void handleUndo()} loading={busy}>
             ↶ Deshacer
           </Button>
@@ -779,14 +1160,140 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         onUploadOverlay={handleUploadOverlay}
       />
 
+      {/* Barra de selección múltiple (FEAT-004): eliminar / mover / copiar atributos. */}
+      {selectedClips.length > 0 && (
+        <SelectionBar
+          selectedClips={selectedClips}
+          activeClipId={selectedClipId}
+          snapEnabled={snapEnabled}
+          busy={busy}
+          onClear={() => {
+            setSelectedClipIds([]);
+            setSelectedClipId(null);
+          }}
+          onBatchDelete={handleBatchDelete}
+          onBatchMove={handleBatchMove}
+          onCopyAttributes={handleCopyAttributes}
+        />
+      )}
+
       {/* Línea de tiempo multipista */}
       <Timeline
         project={project}
         durationS={durationS}
         selectedClipId={selectedClipId}
-        onSelect={setSelectedClipId}
+        selectedClipIds={selectedClipIds}
+        onSelect={handleSelectClip}
+        onRemoveMarker={handleRemoveMarker}
+        busy={busy || mediaDropBusy}
+        onOp={runOp}
+        onDropMedia={handleDropMedia}
       />
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Barra de selección múltiple (FEAT-004)
+// --------------------------------------------------------------------------- //
+
+// Acciones sobre la selección: cada una es UN gesto = UNA operación batch = UNA Version.
+// - Eliminar: op batch_delete (atómico; rechaza pistas locked).
+// - Mover ◀/▶: op batch_move por un delta fijo (ajustado por snap si está activo).
+// - Copiar atributos: op copy_attributes del clip activo a los demás (por tipo compatible).
+function SelectionBar({
+  selectedClips,
+  activeClipId,
+  snapEnabled,
+  busy,
+  onClear,
+  onBatchDelete,
+  onBatchMove,
+  onCopyAttributes,
+}: {
+  selectedClips: { track: EditTrack; clip: EditClip }[];
+  activeClipId: string | null;
+  snapEnabled: boolean;
+  busy: boolean;
+  onClear: () => void;
+  onBatchDelete: () => void | Promise<void>;
+  onBatchMove: (deltaS: number) => void | Promise<void>;
+  onCopyAttributes: (attrs: CopyableAttr[]) => void | Promise<void>;
+}) {
+  const count = selectedClips.length;
+  const active = selectedClips.find((s) => s.clip.id === activeClipId) ?? null;
+  // Atributos copiables aplicables al TIPO del clip activo (lo que el usuario puede pegar
+  // al resto de la selección). El backend igualmente filtra por el tipo de cada destino.
+  const attrsForKind: Record<string, CopyableAttr[]> = {
+    video: ["transform", "transition"],
+    image: ["transform", "transition"],
+    voice: ["gain", "fade"],
+    music: ["gain", "fade"],
+    sfx: ["gain", "fade"],
+    subtitle: ["style"],
+    title: ["title"],
+    overlay: ["overlay"],
+  };
+  const copyable = active ? attrsForKind[active.clip.kind] ?? [] : [];
+  const hasTargets = count > 1 && activeClipId != null;
+
+  return (
+    <Card className="flex flex-wrap items-center gap-3">
+      <span className="text-sm font-medium text-neutral-200">
+        {count} clip{count === 1 ? "" : "s"} seleccionado{count === 1 ? "" : "s"}
+      </span>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="secondary"
+          onClick={() => void onBatchMove(-0.5)}
+          loading={busy}
+          title="Mover selección 0,5 s a la izquierda"
+        >
+          ◀ 0,5 s
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => void onBatchMove(0.5)}
+          loading={busy}
+          title="Mover selección 0,5 s a la derecha"
+        >
+          0,5 s ▶
+        </Button>
+        <span className="text-xs text-neutral-500">
+          {snapEnabled ? "(con snap)" : ""}
+        </span>
+      </div>
+      {hasTargets && copyable.length > 0 && (
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-neutral-500">
+            Copiar del activo a la selección:
+          </span>
+          {copyable.map((attr) => (
+            <Button
+              key={attr}
+              variant="secondary"
+              onClick={() => void onCopyAttributes([attr])}
+              loading={busy}
+              title={`Pegar ${attr} del clip activo al resto de la selección`}
+            >
+              {attr}
+            </Button>
+          ))}
+        </div>
+      )}
+      <div className="ml-auto flex items-center gap-2">
+        <Button
+          variant="danger"
+          onClick={() => void onBatchDelete()}
+          loading={busy}
+        >
+          Eliminar selección
+        </Button>
+        <Button variant="secondary" onClick={onClear} disabled={busy}>
+          Deseleccionar
+        </Button>
+      </div>
+    </Card>
   );
 }
 
@@ -946,49 +1453,248 @@ function TitleOverlayToolbar({
 // Línea de tiempo multipista
 // --------------------------------------------------------------------------- //
 
+// Controles por pista (candado / ojo / altavoz) — FEAT-002. Cada botón alterna una
+// bandera de la pista con la operación `set_track_flags` (una sola op cubre las tres):
+// - locked (candado): protege la edición; las operaciones que mutan clips la rechazan.
+// - hidden (ojo): oculta una pista VISUAL en preview/export (no en el timeline).
+// - muted (altavoz): silencia una pista de AUDIO.
+// El ojo solo se muestra en pistas visuales y el altavoz solo en pistas de audio (cada
+// bandera solo tiene efecto en su dominio); el candado está en todas.
+function TrackFlagControls({
+  track,
+  busy,
+  onOp,
+}: {
+  track: EditTrack;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+}) {
+  const isVisual = (VISUAL_HIDE_KINDS as readonly string[]).includes(track.kind);
+  const isAudio = isAudioKind(track.kind);
+  const toggle = (flag: "locked" | "hidden" | "muted", value: boolean) =>
+    void onOp("set_track_flags", { track_id: track.id, [flag]: value });
+  const btn =
+    "rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors disabled:opacity-40";
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        disabled={busy}
+        aria-pressed={track.locked}
+        title={track.locked ? "Pista bloqueada: desbloquear" : "Bloquear pista"}
+        onClick={() => toggle("locked", !track.locked)}
+        className={`${btn} ${
+          track.locked
+            ? "bg-amber-500/20 text-amber-300"
+            : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+        }`}
+      >
+        {track.locked ? "🔒" : "🔓"}
+      </button>
+      {isVisual && (
+        <button
+          type="button"
+          disabled={busy}
+          aria-pressed={track.hidden}
+          title={track.hidden ? "Pista oculta: mostrar" : "Ocultar pista"}
+          onClick={() => toggle("hidden", !track.hidden)}
+          className={`${btn} ${
+            track.hidden
+              ? "bg-sky-500/20 text-sky-300"
+              : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          {track.hidden ? "🚫" : "👁"}
+        </button>
+      )}
+      {isAudio && (
+        <button
+          type="button"
+          disabled={busy}
+          aria-pressed={track.muted}
+          title={track.muted ? "Pista silenciada: activar" : "Silenciar pista"}
+          onClick={() => toggle("muted", !track.muted)}
+          className={`${btn} ${
+            track.muted
+              ? "bg-rose-500/20 text-rose-300"
+              : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          {track.muted ? "🔇" : "🔊"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Timeline({
   project,
   durationS,
   selectedClipId,
+  selectedClipIds,
   onSelect,
+  onRemoveMarker,
+  busy,
+  onOp,
+  onDropMedia,
 }: {
   project: EditProject;
   durationS: number;
   selectedClipId: string | null;
-  onSelect: (id: string) => void;
+  selectedClipIds: string[];
+  onSelect: (id: string, additive?: boolean) => void;
+  onRemoveMarker: (markerId: string) => void | Promise<void>;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+  onDropMedia: (
+    track: EditTrack,
+    startS: number,
+    file: File,
+  ) => void | Promise<void>;
 }) {
   const scale = durationS > 0 ? 100 / durationS : 0; // % por segundo
+  // Pista que admite importar un medio soltado (el kind del clip debe casar). Las pistas
+  // de subtítulo/título/overlay NO reciben media importada (usan sus propias acciones).
+  const MEDIA_TRACK_KINDS: readonly TrackKind[] = [
+    "video",
+    "image",
+    "voice",
+    "music",
+    "sfx",
+  ];
+  // Estado local de "arrastrando un archivo encima" por pista (resalte visual).
+  const [dragOverTrack, setDragOverTrack] = useState<string | null>(null);
+
+  // Mapea la posición X del drop a un start_s en segundos dentro de la pista.
+  function startSFromDrop(e: React.DragEvent<HTMLDivElement>): number {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (r.width <= 0 || durationS <= 0) return 0;
+    const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    return Math.round(frac * durationS * 1000) / 1000;
+  }
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
+  const markers: EditMarker[] = project.markers ?? [];
+  const selectedSet = new Set(selectedClipIds);
 
   return (
     <Card className="flex flex-col gap-2">
       <h2 className="font-medium text-neutral-100">Línea de tiempo</h2>
+      <p className="text-xs text-neutral-500">
+        Mantén Mayús o Ctrl/⌘ al hacer clic para seleccionar varios clips.
+      </p>
+      {/* Regla con marcadores (FEAT-003): puntos etiquetados que el snap usa como anclas. */}
+      <div className="flex items-center gap-3">
+        <div className="w-32 shrink-0 text-xs text-neutral-500">Marcadores</div>
+        <div className="relative h-6 flex-1 rounded-md border border-neutral-800 bg-neutral-950">
+          {markers.map((marker) => {
+            const left = durationS > 0 ? Math.max(0, Math.min(100, marker.t_s * scale)) : 0;
+            return (
+              <button
+                key={marker.id}
+                type="button"
+                disabled={busy}
+                onClick={() => void onRemoveMarker(marker.id)}
+                title={`${marker.label || "marcador"} · ${marker.t_s.toFixed(2)}s (clic para quitar)`}
+                className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 disabled:opacity-40"
+                style={{ left: `${left}%`, backgroundColor: marker.color }}
+              >
+                <span
+                  className="absolute -top-0.5 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45"
+                  style={{ backgroundColor: marker.color }}
+                />
+              </button>
+            );
+          })}
+          {markers.length === 0 && (
+            <span className="absolute left-2 top-1 text-[10px] text-neutral-600">
+              Usa «＋ Marcador» para marcar el instante actual
+            </span>
+          )}
+        </div>
+      </div>
       <div className="flex flex-col gap-2">
         {tracks.map((track) => (
           <div key={track.id} className="flex items-center gap-3">
-            <div className="w-24 shrink-0 text-xs text-neutral-400">
-              {track.name || track.kind}
-              {track.muted && <span className="ml-1 text-rose-400">(mute)</span>}
+            <div className="flex w-32 shrink-0 flex-col gap-1">
+              <div className="truncate text-xs text-neutral-400">
+                {track.name || track.kind}
+                {track.locked && (
+                  <span className="ml-1 text-amber-400">(bloqueada)</span>
+                )}
+              </div>
+              <TrackFlagControls track={track} busy={busy} onOp={onOp} />
             </div>
-            <div className="relative h-9 flex-1 overflow-hidden rounded-md border border-neutral-800 bg-neutral-950">
+            <div
+              className={`relative h-9 flex-1 overflow-hidden rounded-md border bg-neutral-950 ${
+                track.locked ? "border-amber-500/60" : "border-neutral-800"
+              } ${track.hidden ? "opacity-50" : ""} ${
+                dragOverTrack === track.id
+                  ? "ring-2 ring-emerald-400/70"
+                  : ""
+              }`}
+              onDragOver={(e) => {
+                // Solo pistas de media (no locked) aceptan archivos del explorador.
+                if (
+                  track.locked ||
+                  !MEDIA_TRACK_KINDS.includes(track.kind) ||
+                  busy
+                ) {
+                  return;
+                }
+                if (Array.from(e.dataTransfer.types).includes("Files")) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                  if (dragOverTrack !== track.id) setDragOverTrack(track.id);
+                }
+              }}
+              onDragLeave={() => {
+                if (dragOverTrack === track.id) setDragOverTrack(null);
+              }}
+              onDrop={(e) => {
+                setDragOverTrack(null);
+                if (
+                  track.locked ||
+                  !MEDIA_TRACK_KINDS.includes(track.kind) ||
+                  busy
+                ) {
+                  return;
+                }
+                const file = e.dataTransfer.files?.[0];
+                if (!file) return;
+                e.preventDefault();
+                const startS = startSFromDrop(e);
+                void onDropMedia(track, startS, file);
+              }}
+              title={
+                MEDIA_TRACK_KINDS.includes(track.kind) && !track.locked
+                  ? "Suelta aquí un archivo (audio/vídeo/imagen) para importarlo en esta pista"
+                  : undefined
+              }
+            >
               {track.clips.map((clip) => {
                 const left = Math.max(0, clip.start_s * scale);
                 const width = Math.max(1.5, clip.duration_s * scale);
-                const isSel = clip.id === selectedClipId;
+                const isActive = clip.id === selectedClipId;
+                const isSel = selectedSet.has(clip.id);
                 return (
                   <button
                     key={clip.id}
                     type="button"
-                    onClick={() => onSelect(clip.id)}
+                    onClick={(e) =>
+                      onSelect(clip.id, e.shiftKey || e.ctrlKey || e.metaKey)
+                    }
                     title={`${clip.kind} · ${clip.start_s.toFixed(2)}s → ${(
                       clip.start_s + clip.duration_s
                     ).toFixed(2)}s`}
                     className={`absolute top-0.5 bottom-0.5 flex items-center overflow-hidden rounded px-1.5 text-[10px] font-medium text-white/90 ${
                       TRACK_COLORS[track.kind] ?? "bg-neutral-600"
                     } ${
-                      isSel
+                      isActive
                         ? "ring-2 ring-white"
-                        : "ring-1 ring-black/40 hover:ring-white/60"
+                        : isSel
+                          ? "ring-2 ring-sky-300"
+                          : "ring-1 ring-black/40 hover:ring-white/60"
                     } ${clip.enabled ? "" : "opacity-40"}`}
                     style={{ left: `${left}%`, width: `${width}%` }}
                   >
@@ -1309,6 +2015,119 @@ function VisualInspector({
           ))}
         </Select>
       </Field>
+
+      {/* Velocidad / congelar fotograma / desvincular audio (FEAT-006 / FEAT-005). */}
+      <SpeedFreezeControls clip={clip} busy={busy} onOp={onOp} />
+    </div>
+  );
+}
+
+// Controles de velocidad (rate + invertir), congelar fotograma (at_s/hold_s) y, para
+// clips de vídeo, desvincular el audio de origen a una pista voice. Cada control llama a la
+// operación pura correspondiente (set_speed/set_freeze/detach_audio), que versiona y se
+// propaga a preview/export por igual.
+function SpeedFreezeControls({
+  clip,
+  busy,
+  onOp,
+}: {
+  clip: EditClip;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+}) {
+  const rate = clip.speed?.rate ?? 1;
+  const reverse = clip.speed?.reverse ?? false;
+  const freeze = clip.freeze;
+  const isVideo = clip.kind === "video";
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
+      <h4 className="text-xs font-semibold uppercase text-neutral-500">
+        Velocidad y congelación
+      </h4>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={`Velocidad (${rate.toFixed(2)}×)`}>
+          <TextInput
+            type="number"
+            step="0.25"
+            min="0.1"
+            defaultValue={rate}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v > 0 && v !== rate)
+                void onOp("set_speed", { clip_id: clip.id, rate: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        {isVideo && (
+          <Field label="Invertir (export)">
+            <Button
+              variant={reverse ? "primary" : "secondary"}
+              loading={busy}
+              onClick={() =>
+                void onOp("set_speed", { clip_id: clip.id, reverse: !reverse })
+              }
+            >
+              {reverse ? "Invertido ✓" : "Invertir"}
+            </Button>
+          </Field>
+        )}
+      </div>
+
+      {isVideo && (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Congelar en (s del origen)">
+            <TextInput
+              type="number"
+              step="0.1"
+              min="0"
+              defaultValue={freeze?.at_s ?? clip.source_in_s}
+              onBlur={(e) => {
+                const atS = Number(e.target.value);
+                const holdS = freeze?.hold_s ?? 1;
+                if (Number.isFinite(atS))
+                  void onOp("set_freeze", {
+                    clip_id: clip.id,
+                    at_s: atS,
+                    hold_s: holdS,
+                  });
+              }}
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Mantener (s); 0 = quitar">
+            <TextInput
+              type="number"
+              step="0.1"
+              min="0"
+              defaultValue={freeze?.hold_s ?? 0}
+              onBlur={(e) => {
+                const holdS = Number(e.target.value);
+                const atS = freeze?.at_s ?? clip.source_in_s;
+                if (Number.isFinite(holdS))
+                  void onOp("set_freeze", {
+                    clip_id: clip.id,
+                    at_s: atS,
+                    hold_s: holdS,
+                  });
+              }}
+              disabled={busy}
+            />
+          </Field>
+        </div>
+      )}
+
+      {isVideo && (
+        <Button
+          variant="secondary"
+          loading={busy}
+          disabled={clip.mute_source_audio}
+          onClick={() => void onOp("detach_audio", { clip_id: clip.id })}
+        >
+          {clip.mute_source_audio ? "Audio desvinculado ✓" : "Desvincular audio"}
+        </Button>
+      )}
     </div>
   );
 }

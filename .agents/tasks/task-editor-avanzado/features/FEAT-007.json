@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-007",
+  "type": "feat",
+  "description": "Importar medios por arrastrar y soltar ARCHIVOS desde el explorador. Generaliza la subida (hoy solo imagen en generation.py) a audio/video/imagen a nivel de proyecto y, al soltar en una pista, crea Asset + clip. Distinto del drag&drop de POSICION de FEAT-008 del Bloque 2 (que ya existe). La subida (I/O, validada con Pillow/ffprobe) y la colocacion (operacion pura) quedan separadas. Ver docs/EDITOR-ADVANCED.md seccion 6 y 4.9.",
+  "status": "completed",
+  "steps": [
+    "Refactor sin cambio de comportamiento: extraer _ALLOWED_IMAGE_EXTS/_ALLOWED_IMAGE_CONTENT_TYPES/_ALLOWED_OVERLAY_*/_MAX_UPLOAD_BYTES/_safe_stem de backend/app/api/generation.py a un helper compartido (p. ej. backend/app/storage/uploads.py o backend/app/api/uploads.py) y reusarlo desde generation.py y editor.py. Los tests existentes de upload_scene_image/upload_overlay_image deben seguir pasando.",
+    "Definir listas de extensiones/content-types para video (.mp4/.mov/.webm/.mkv) y audio (.mp3/.wav/.m4a/.aac/.ogg/.flac) en el helper, con una constante de tamano maximo para media (puede ser mayor que la de imagen; documentar).",
+    "backend/app/api/editor.py: POST /projects/{project_id}/editor/media/upload (UploadFile, param opcional role=voice|music|sfx para audio, default music). Detecta kind por ext+content-type. Valida imagen con Pillow (patron actual) y audio/video con ffprobe (AIV_FFPROBE_BIN): confirma streams y lee duration_s. Si ffprobe no esta disponible, rechaza con mensaje accionable (no finge). Guarda bajo ensure_project_workspace(id)/media/uploads/ (AIV_MEDIA_ROOT) y crea Asset(kind correcto, provider='upload', meta con duration_s/dimensiones). Devuelve AssetRead.",
+    "operations.py: op_add_media_clip({track_id, asset_id, start_s, duration_s, kind}) que crea el EditClip del kind correcto en la pista (valida que el kind del clip casa con el de la pista; patron de op_add_overlay/op_add_title). Para audio/video fija source_out_s con la duracion de origen conocida. Registrar en OPERATIONS.",
+    "frontend: lib/api.ts uploadEditMedia(projectId, file, role?). EditorWorkspace.tsx: zona de drop sobre cada pista que, al soltar un archivo del explorador, sube (uploadEditMedia) y luego coloca el clip en el start_s de la posicion de drop (op_add_media_clip), integrando el snap de FEAT-003.",
+    "Tests: backend/tests/ (replicar patron de test_overlay_upload.py) para media/upload con un WAV y un MP4 reales minimos (reutilizar fixtures de test_render_engine) validados por ffprobe; casos de rechazo (vacio, demasiado grande, no media, ffprobe ausente -> skip/razon). backend/tests/editor/ para op_add_media_clip (kind casa con pista, source_out_s, rechazos). Smoke manual del drag&drop documentado en findings."
+  ],
+  "acceptance_criteria": [
+    "El refactor de extraccion de constantes no cambia el comportamiento: los tests existentes de upload de imagen/overlay siguen pasando.",
+    "POST .../editor/media/upload acepta imagen/audio/video, valida (Pillow/ffprobe), guarda bajo AIV_MEDIA_ROOT y crea el Asset con el kind correcto y duration_s en meta; rechaza no-media/vacio/grande con 4xx.",
+    "op_add_media_clip crea el clip con el kind correcto en la pista indicada (validando compatibilidad) y fija source_out_s para audio/video; queda registrada en OPERATIONS.",
+    "El Asset subido es servible por GET /assets/{id}/download (lo usa el Player).",
+    "frontend build/lint/typecheck y remotion typecheck pasan; pytest backend sin fallos (tests de media se saltan con razon si ffprobe no esta, aunque en el sandbox SI esta)."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementada. Constantes/_safe_stem extraidas a backend/app/storage/uploads.py (ALLOWED_IMAGE/OVERLAY/VIDEO/AUDIO_*, MAX_UPLOAD_BYTES=15MB, MAX_MEDIA_UPLOAD_BYTES=200MB, safe_stem, probe_media con ffprobe) y reusadas desde generation.py (re-export con los nombres _ALLOWED_*/_MAX_UPLOAD_BYTES/_safe_stem: el monkeypatch de generation._MAX_UPLOAD_BYTES del test de overlay sigue funcionando porque la referencia es por nombre de modulo en tiempo de llamada). Endpoint POST /projects/{id}/editor/media/upload (role=voice|music|sfx default music) detecta kind por ext+content-type, valida imagen con Pillow y audio/video con ffprobe (streams+duration_s), guarda en media/uploads/ bajo AIV_MEDIA_ROOT y crea Asset(provider='upload'). op_add_media_clip registrado en OPERATIONS (valida kind<->pista, fija source_out_s en audio/video). Frontend: uploadEditMedia + addMediaClip en lib/api.ts; zona de drop por pista en EditorWorkspace con snap de FEAT-003. Tests: test_editor_media_upload.py (WAV/MP4 reales via ffmpeg, rechazos, servible por /assets/{id}/download) y editor/test_add_media_clip.py. Fixtures WAV/MP4 se generan con ffmpeg (skip con razon si no esta; en el sandbox SI). Smoke manual del drag&drop: pendiente de navegador (no automatizable aqui); la colocacion es op pura testeada. Refactor verificado SIN cambio de comportamiento (tests de upload imagen/overlay verdes)."
+}

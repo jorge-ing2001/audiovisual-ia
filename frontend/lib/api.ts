@@ -11,6 +11,8 @@ import type {
   EditOperationRequest,
   EditProject,
   EditProjectRead,
+  EditSequence,
+  TrackKind,
 } from "@/lib/editor/types";
 
 export const API_BASE_URL =
@@ -341,6 +343,53 @@ export async function uploadOverlay(projectId: number, file: File): Promise<Asse
   return (await res.json()) as Asset;
 }
 
+/** Rol de un AUDIO importado al editor (mapea a Asset.kind: voice/music/sfx). */
+export type EditMediaRole = "voice" | "music" | "sfx";
+
+/**
+ * Importa un medio (audio/vídeo/imagen) a nivel de PROYECTO para el editor (FEAT-007).
+ *
+ * Envía `multipart/form-data` a `POST .../editor/media/upload`. El backend detecta el
+ * `kind` por extensión + content-type (imagen/vídeo o audio mapeado a `role`), valida la
+ * imagen con Pillow y el audio/vídeo con ffprobe (leyendo `duration_s`), guarda el fichero
+ * bajo `media/uploads/` (servible por `GET /assets/{id}/download`) y crea el `Asset`
+ * correspondiente. Tras subir, el workspace coloca el clip con `addMediaClip` (§4.9/§6.1).
+ */
+export async function uploadEditMedia(
+  projectId: number,
+  file: File,
+  role?: EditMediaRole,
+): Promise<Asset> {
+  const form = new FormData();
+  form.append("file", file);
+  const query = role ? `?role=${encodeURIComponent(role)}` : "";
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE_URL}/projects/${projectId}/editor/media/upload${query}`,
+      { method: "POST", cache: "no-store", body: form },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error de red";
+    throw new ApiError(
+      0,
+      `No se pudo contactar con el backend (${API_BASE_URL}): ${message}`,
+    );
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+      else if (body.detail) detail = JSON.stringify(body.detail);
+    } catch {
+      // cuerpo no-JSON
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as Asset;
+}
+
 // --------------------------------------------------------------------------- //
 // Assets (/assets)
 // --------------------------------------------------------------------------- //
@@ -406,26 +455,50 @@ export function videoDownloadUrl(projectId: number): string {
  * Abre el editor: devuelve el EditProject activo o lo deriva del último Timeline.
  * Idempotente (POST .../editor/open). Es el primer paso del EditorWorkspace.
  */
-export function openEditor(projectId: number): Promise<EditProjectRead> {
-  return request<EditProjectRead>(`/projects/${projectId}/editor/open`, {
-    method: "POST",
-  });
+// Secuencia activa por defecto (FEAT-008). Sin pasar `sequence` el backend opera sobre
+// `main`, idéntico al comportamiento previo (regresión).
+const DEFAULT_SEQUENCE = "main";
+
+/** Query `?sequence=...` solo cuando NO es la secuencia por defecto (regresión). */
+function sequenceQuery(sequence?: string): string {
+  return sequence && sequence !== DEFAULT_SEQUENCE
+    ? `?sequence=${encodeURIComponent(sequence)}`
+    : "";
+}
+
+export function openEditor(
+  projectId: number,
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return request<EditProjectRead>(
+    `/projects/${projectId}/editor/open${sequenceQuery(sequence)}`,
+    { method: "POST" },
+  );
 }
 
 /** Estado completo del EditProject activo (GET .../editor). 404 si no se abrió. */
-export function getEditProject(projectId: number): Promise<EditProjectRead> {
-  return request<EditProjectRead>(`/projects/${projectId}/editor`);
+export function getEditProject(
+  projectId: number,
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return request<EditProjectRead>(
+    `/projects/${projectId}/editor${sequenceQuery(sequence)}`,
+  );
 }
 
 /** Reemplaza el EditProject completo (PUT .../editor) y crea una Version (undo/redo). */
 export function putEditProject(
   projectId: number,
   project: EditProject,
+  sequence?: string,
 ): Promise<EditProjectRead> {
-  return request<EditProjectRead>(`/projects/${projectId}/editor`, {
-    method: "PUT",
-    body: JSON.stringify({ edit_project: project }),
-  });
+  return request<EditProjectRead>(
+    `/projects/${projectId}/editor${sequenceQuery(sequence)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ edit_project: project }),
+    },
+  );
 }
 
 /** Aplica UNA operación pura sobre el EditProject activo (POST .../editor/op). */
@@ -433,38 +506,299 @@ export function applyEditOp(
   projectId: number,
   op: string,
   params: Record<string, unknown> = {},
+  sequence?: string,
 ): Promise<EditProjectRead> {
   const body: EditOperationRequest = { op, params };
-  return request<EditProjectRead>(`/projects/${projectId}/editor/op`, {
+  return request<EditProjectRead>(
+    `/projects/${projectId}/editor/op${sequenceQuery(sequence)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/**
+ * Fija banderas de una pista (lock/hide/mute) con la operación `set_track_flags` (FEAT-002).
+ *
+ * Azúcar tipado sobre `applyEditOp`: envía solo las banderas indicadas. `locked` protege la
+ * edición, `hidden` oculta una pista VISUAL en preview/export y `muted` silencia AUDIO.
+ */
+export function setTrackFlags(
+  projectId: number,
+  trackId: string,
+  flags: { locked?: boolean; hidden?: boolean; muted?: boolean },
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_track_flags", {
+    track_id: trackId,
+    ...flags,
+  });
+}
+
+/**
+ * Elimina un clip cerrando el hueco en su pista (ripple delete, operación `ripple_delete`).
+ *
+ * Desplaza a la izquierda los clips posteriores de la MISMA pista; no toca otras pistas y
+ * rechaza (422) si la pista está bloqueada.
+ */
+export function rippleDeleteClip(
+  projectId: number,
+  clipId: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "ripple_delete", { clip_id: clipId });
+}
+
+/**
+ * Añade un marcador a la línea de tiempo (operación `add_marker`, FEAT-003).
+ *
+ * Los marcadores son metadatos (no afectan al render): el frontend los pinta en la regla
+ * y el snap los usa como puntos de alineación. `t_s` es el instante (>= 0); `label`/`color`
+ * son opcionales.
+ */
+export function addMarker(
+  projectId: number,
+  t_s: number,
+  opts: { label?: string; color?: string } = {},
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "add_marker", { t_s, ...opts }, sequence);
+}
+
+/** Edita un marcador existente (operación `set_marker`, FEAT-003). */
+export function setMarker(
+  projectId: number,
+  markerId: string,
+  fields: { t_s?: number; label?: string; color?: string },
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_marker", { marker_id: markerId, ...fields });
+}
+
+/** Elimina un marcador por id (operación `remove_marker`, FEAT-003). */
+export function removeMarker(
+  projectId: number,
+  markerId: string,
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "remove_marker", { marker_id: markerId }, sequence);
+}
+
+/**
+ * Elimina VARIOS clips de forma atómica (operación `batch_delete`, FEAT-004).
+ *
+ * Todo o nada: si algún clip no existe o su pista está `locked`, falla entera (422) sin
+ * mutar. Como una sola op, el gesto produce UNA Version (undo lo revierte de golpe).
+ */
+export function batchDeleteClips(
+  projectId: number,
+  clipIds: string[],
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "batch_delete", { clip_ids: clipIds }, sequence);
+}
+
+/**
+ * Desplaza VARIOS clips por el mismo `delta_s` (operación `batch_move`, FEAT-004).
+ *
+ * Conserva los offsets relativos; valida start_s >= 0 resultante y pistas no bloqueadas.
+ * Atómica: una op = una Version. El `delta_s` debe venir ya ajustado por el snap si procede.
+ */
+export function batchMoveClips(
+  projectId: number,
+  clipIds: string[],
+  deltaS: number,
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(
+    projectId,
+    "batch_move",
+    { clip_ids: clipIds, delta_s: deltaS },
+    sequence,
+  );
+}
+
+/** Atributos copiables por `copyAttributes` (espejo de `_COPYABLE_ATTRS` del backend). */
+export type CopyableAttr =
+  | "transform"
+  | "gain"
+  | "fade"
+  | "style"
+  | "title"
+  | "overlay"
+  | "transition"
+  | "speed";
+
+/**
+ * Copia atributos de un clip a otros (operación `copy_attributes`, FEAT-004).
+ *
+ * Copia solo los atributos compatibles con el TIPO de cada destino (los no aplicables se
+ * ignoran); nunca copia id/start_s/duration_s/asset_id. Atómica: una op = una Version.
+ */
+export function copyAttributes(
+  projectId: number,
+  sourceClipId: string,
+  targetClipIds: string[],
+  attrs: CopyableAttr[],
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(
+    projectId,
+    "copy_attributes",
+    {
+      source_clip_id: sourceClipId,
+      target_clip_ids: targetClipIds,
+      attrs,
+    },
+    sequence,
+  );
+}
+
+/**
+ * Desvincula el audio de un clip de vídeo (operación `detach_audio`, FEAT-005).
+ *
+ * Crea un clip de audio equivalente en una pista `voice` (creándola si falta) y marca el
+ * clip de vídeo para no reproducir su audio de origen. Rechaza (422) clips no-vídeo. Si se
+ * indica `targetTrackId`, debe ser una pista `voice` existente.
+ */
+export function detachAudio(
+  projectId: number,
+  clipId: string,
+  targetTrackId?: string,
+): Promise<EditProjectRead> {
+  const params: Record<string, unknown> = { clip_id: clipId };
+  if (targetTrackId) params.target_track_id = targetTrackId;
+  return applyEditOp(projectId, "detach_audio", params);
+}
+
+/**
+ * Fija la velocidad de un clip (operación `set_speed`, FEAT-006).
+ *
+ * `rate > 0` (1.0 = normal; recalcula `duration_s`); `reverse` solo en vídeo (el reverse de
+ * VÍDEO se aplica en export, en preview se muestra un indicador). `rate=1.0` sin `reverse`
+ * vuelve al estado neutro (sin cambios de compilación).
+ */
+export function setClipSpeed(
+  projectId: number,
+  clipId: string,
+  opts: { rate?: number; reverse?: boolean },
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_speed", { clip_id: clipId, ...opts });
+}
+
+/**
+ * Congela un fotograma de un clip de vídeo (operación `set_freeze`, FEAT-006).
+ *
+ * `atS` es el instante del origen a congelar (dentro de su rango) y `holdS` cuánto se
+ * mantiene. `holdS=0` limpia la congelación. Rechaza (422) clips de imagen.
+ */
+export function setClipFreeze(
+  projectId: number,
+  clipId: string,
+  atS: number,
+  holdS: number,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_freeze", { clip_id: clipId, at_s: atS, hold_s: holdS });
+}
+
+/**
+ * Coloca un Asset subido como clip nuevo en una pista (operación `add_media_clip`, FEAT-007).
+ *
+ * Es el segundo paso del drag&drop de importación: tras `uploadEditMedia`, coloca el clip
+ * del `kind` correcto en el `start_s` donde se soltó (ya ajustado por el snap). Para
+ * audio/vídeo, `sourceDurationS` fija `source_out_s` (si se omite, usa `durationS`).
+ */
+export function addMediaClip(
+  projectId: number,
+  params: {
+    trackId: string;
+    assetId: number;
+    startS: number;
+    durationS: number;
+    kind: TrackKind;
+    sourceDurationS?: number;
+  },
+  sequence?: string,
+): Promise<EditProjectRead> {
+  const body: Record<string, unknown> = {
+    track_id: params.trackId,
+    asset_id: params.assetId,
+    start_s: params.startS,
+    duration_s: params.durationS,
+    kind: params.kind,
+  };
+  if (params.sourceDurationS !== undefined) {
+    body.source_duration_s = params.sourceDurationS;
+  }
+  return applyEditOp(projectId, "add_media_clip", body, sequence);
+}
+
+/** Deshace la última edición (POST .../editor/undo). 409 si no hay nada que deshacer. */
+export function undoEdit(
+  projectId: number,
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return request<EditProjectRead>(
+    `/projects/${projectId}/editor/undo${sequenceQuery(sequence)}`,
+    { method: "POST" },
+  );
+}
+
+/** Rehace la edición deshecha (POST .../editor/redo). 409 si no hay nada que rehacer. */
+export function redoEdit(
+  projectId: number,
+  sequence?: string,
+): Promise<EditProjectRead> {
+  return request<EditProjectRead>(
+    `/projects/${projectId}/editor/redo${sequenceQuery(sequence)}`,
+    { method: "POST" },
+  );
+}
+
+/** Lista las versiones del historial de edición (GET .../editor/history). */
+export function getEditHistory(
+  projectId: number,
+  sequence?: string,
+): Promise<EditHistoryEntry[]> {
+  return request<EditHistoryEntry[]>(
+    `/projects/${projectId}/editor/history${sequenceQuery(sequence)}`,
+  );
+}
+
+/** Lista las secuencias del proyecto (GET .../editor/sequences, FEAT-008). */
+export function listSequences(projectId: number): Promise<EditSequence[]> {
+  return request<EditSequence[]>(`/projects/${projectId}/editor/sequences`);
+}
+
+/**
+ * Crea una secuencia nueva (POST .../editor/sequences, FEAT-008).
+ *
+ * `from` = "active" duplica la secuencia activa (`baseSequence`, default main) como punto
+ * de partida; "timeline" la deriva del Timeline de generación (como `open`). Devuelve el
+ * EditProject inicial de la secuencia. 409 si ya existe; 422 si falta `sequenceId`.
+ */
+export function createSequence(
+  projectId: number,
+  sequenceId: string,
+  opts: { name?: string; from?: "active" | "timeline"; baseSequence?: string } = {},
+): Promise<EditProjectRead> {
+  const body: Record<string, unknown> = { sequence_id: sequenceId };
+  if (opts.name !== undefined) body.name = opts.name;
+  if (opts.from !== undefined) body.from = opts.from;
+  if (opts.baseSequence !== undefined) body.base_sequence = opts.baseSequence;
+  return request<EditProjectRead>(`/projects/${projectId}/editor/sequences`, {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
-/** Deshace la última edición (POST .../editor/undo). 409 si no hay nada que deshacer. */
-export function undoEdit(projectId: number): Promise<EditProjectRead> {
-  return request<EditProjectRead>(`/projects/${projectId}/editor/undo`, {
-    method: "POST",
-  });
-}
-
-/** Rehace la edición deshecha (POST .../editor/redo). 409 si no hay nada que rehacer. */
-export function redoEdit(projectId: number): Promise<EditProjectRead> {
-  return request<EditProjectRead>(`/projects/${projectId}/editor/redo`, {
-    method: "POST",
-  });
-}
-
-/** Lista las versiones del historial de edición (GET .../editor/history). */
-export function getEditHistory(projectId: number): Promise<EditHistoryEntry[]> {
-  return request<EditHistoryEntry[]>(`/projects/${projectId}/editor/history`);
-}
-
 /** Encola el job edit_export que re-renderiza desde el EditProject (POST .../editor/export). */
-export function enqueueEditExport(projectId: number): Promise<EditExportResponse> {
-  return request<EditExportResponse>(`/projects/${projectId}/editor/export`, {
-    method: "POST",
-  });
+export function enqueueEditExport(
+  projectId: number,
+  sequence?: string,
+): Promise<EditExportResponse> {
+  return request<EditExportResponse>(
+    `/projects/${projectId}/editor/export${sequenceQuery(sequence)}`,
+    { method: "POST" },
+  );
 }
 
 /** Estado del último export de edición del proyecto (GET .../editor/export, para polling). */

@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-008",
+  "type": "feat",
+  "description": "Varias secuencias por proyecto (variantes del video) sin migraciones de esquema. Una secuencia es un EditProject independiente identificado por sequence_id; la persistencia (store.py) se extiende para que el 'activo', el undo/redo y el export sean POR secuencia. Es el cambio con mayor riesgo de regresion sobre el historial undo/redo, por eso va aislado al final del bloque con tests de regresion dedicados. Ver docs/EDITOR-ADVANCED.md seccion 7.",
+  "status": "pending",
+  "steps": [
+    "model.py: anadir 'sequence_id: str = \"main\"' y 'sequence_name: str = \"Principal\"' a EditProject (defaults neutros: un documento previo = secuencia main).",
+    "convert.py: timeline_to_edit_project deja la secuencia main por defecto (sin cambios de comportamiento).",
+    "store.py: segmentar por sequence_id. _edit_timeline_rows y load_active_edit_project filtran por sequence_id (default main). save_edit_project/undo/redo/history calculan cursor/_max sobre las Version de esa sequence_id (anadir sequence_id al snapshot). Nuevas funciones: list_sequences(project, session) y create_sequence(project, session, sequence_id, name, base_from_active|from_timeline).",
+    "backend/app/api/editor.py: GET /projects/{id}/editor/sequences (lista id/name/duracion/version activa); POST /projects/{id}/editor/sequences (crea, opcionalmente duplicando la activa o derivando del Timeline). Anadir parametro opcional 'sequence' (query/body, default 'main') a GET/PUT/op/undo/redo/export para operar sobre la secuencia elegida. Sin el parametro, comportamiento identico al actual.",
+    "schemas.py: ampliar/anadir esquemas para sequences si hace falta.",
+    "frontend: lib/api.ts (listSequences/createSequence + pasar sequence en las llamadas del editor). EditorWorkspace.tsx: selector de secuencia activa y accion de crear secuencia.",
+    "Tests (criticos): backend/tests/editor/ de store/API: (a) REGRESION -- sin sequence_id, todo el flujo save/undo/redo/history/export de la secuencia main se comporta EXACTAMENTE como hoy (apoyarse en los tests existentes del store); (b) dos secuencias mantienen historiales de undo/redo independientes; (c) load_active_edit_project devuelve la version activa de la secuencia pedida. Si durante la implementacion el riesgo de romper el undo/redo probado resulta alto, marcar la feature blocked con detalle en vez de arriesgar."
+  ],
+  "acceptance_criteria": [
+    "Un EditProject previo sin sequence_id se trata como secuencia 'main' y su render/inputProps no cambia (regresion).",
+    "store.py segmenta activo/undo/redo/history por sequence_id; los tests existentes del store (secuencia main) siguen pasando sin cambios de comportamiento.",
+    "GET/POST .../editor/sequences listan y crean secuencias; las rutas del editor aceptan el parametro sequence (default main) sin romper las llamadas actuales.",
+    "Dos secuencias del mismo proyecto mantienen contenido e historial undo/redo independientes (test dedicado verde).",
+    "frontend build/lint/typecheck y remotion typecheck pasan; pytest backend sin fallos ni regresion del conteo baseline."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

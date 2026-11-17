@@ -31,12 +31,16 @@ __all__ = [
     "TitleAnimation",
     "TitleStyle",
     "OverlayStyle",
+    "ClipSpeed",
+    "ClipFreeze",
+    "EditMarker",
     "EditClip",
     "EditTrack",
     "EditMeta",
     "EditProject",
     "VISUAL_KINDS",
     "VISUAL_RENDER_KINDS",
+    "VISUAL_HIDE_KINDS",
     "AUDIO_KINDS",
 ]
 
@@ -52,6 +56,11 @@ TrackKind = Literal[
 VISUAL_KINDS: tuple[TrackKind, ...] = ("video", "image")
 #: Pistas que pinta la composición ``Edit`` por encima del fondo (visuales + título + overlay).
 VISUAL_RENDER_KINDS: tuple[TrackKind, ...] = ("video", "image", "title", "overlay")
+#: Pistas VISUALES a las que afecta ``EditTrack.hidden`` (se omiten en preview/export).
+#: Incluye también los subtítulos, que son contenido visual aunque no "media" recortable.
+VISUAL_HIDE_KINDS: tuple[TrackKind, ...] = (
+    "video", "image", "title", "overlay", "subtitle"
+)
 #: Pistas que alimentan el ``AudioMixer`` (voice/music/sfx).
 AUDIO_KINDS: tuple[TrackKind, ...] = ("voice", "music", "sfx")
 
@@ -290,6 +299,85 @@ class OverlayStyle(BaseModel):
         return value
 
 
+class ClipSpeed(BaseModel):
+    """Control de velocidad de un clip (acelerar/ralentizar/invertir).
+
+    - ``rate``: factor de reproducción (``1.0`` = normal; ``>1`` acelera; ``<1``
+      ralentiza). Debe ser ``> 0``. Afecta a clips VISUALES recortables (``video``) y de
+      AUDIO; en ``image`` ``rate`` solo escala la duración en la línea de tiempo (una
+      imagen fija no tiene reproducción) y ``reverse`` no aplica.
+    - ``reverse``: invierte el clip. Solo tiene sentido en vídeo/audio; la operación
+      ``op_set_speed`` lo rechaza en clips no-vídeo. El reverse real del VÍDEO es caro y se
+      resuelve en el camino de export (ver ``docs/EDITOR-ADVANCED.md`` §8).
+
+    Default neutro: ``speed=None`` ⇔ ``rate=1.0, reverse=False`` ⇔ sin cambios de
+    compilación (regresión §3.6).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rate: float = 1.0
+    reverse: bool = False
+
+    @field_validator("rate")
+    @classmethod
+    def _rate_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("speed.rate debe ser > 0")
+        return value
+
+
+class ClipFreeze(BaseModel):
+    """Congela un fotograma del origen de un clip visual durante ``hold_s`` segundos.
+
+    - ``at_s``: instante del ORIGEN (``source``) que se congela (>= 0).
+    - ``hold_s``: cuánto tiempo se mantiene congelado en la línea de tiempo (>= 0).
+
+    Default neutro ``None`` en ``EditClip.freeze`` (sin congelación). Para ``image`` el
+    freeze es redundante y la operación ``op_set_freeze`` lo rechaza. El freeze afecta solo
+    al vídeo (el audio del tramo sigue), ver ``docs/EDITOR-ADVANCED.md`` §5.3.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    at_s: float = 0.0
+    hold_s: float = 0.0
+
+    @field_validator("at_s", "hold_s")
+    @classmethod
+    def _non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("freeze.at_s/hold_s no pueden ser negativos")
+        return value
+
+
+class EditMarker(BaseModel):
+    """Marcador de la línea de tiempo (metadato del proyecto, NO afecta al render).
+
+    Un marcador es un punto etiquetado de la línea de tiempo (``t_s``, ``label``,
+    ``color``) que el frontend pinta sobre la regla/timeline y que el **snap** usa como
+    punto de alineación (además de los bordes de clip). Es un METADATO del proyecto: el
+    compilador (``compile.py``) NO lo emite a ``inputProps``/``MixTrack``, de modo que un
+    ``EditProject`` con o sin ``markers`` produce EXACTAMENTE el mismo render (regresión).
+
+    Ver ``docs/EDITOR-ADVANCED.md`` §3.4 y §8 (snap).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    t_s: float = 0.0
+    label: str = ""
+    color: str = "#38bdf8"
+
+    @field_validator("t_s")
+    @classmethod
+    def _t_non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("marker.t_s no puede ser negativo")
+        return value
+
+
 class EditClip(BaseModel):
     """Un clip posicionado en una pista del editor.
 
@@ -335,6 +423,18 @@ class EditClip(BaseModel):
     # Overlay (imagen/logo/marca de agua). Reutiliza ``asset_id`` como imagen.
     overlay: OverlayStyle | None = None
 
+    # Detach de audio (FEAT-005): en un clip VISUAL ``video`` indica que su pista de audio
+    # de origen NO suena (el audio se oye por el clip ``voice`` desvinculado que crea
+    # ``op_detach_audio``). Default neutro ``False``: un clip previo sin el campo valida y
+    # compila IGUAL (el compilador solo emite ``muted`` cuando es ``True``; regresión §5.4).
+    mute_source_audio: bool = False
+
+    # Velocidad y congelación (FEAT-006). Defaults NEUTROS (``None``): un clip previo sin
+    # estos campos valida y compila IGUAL (el compilador solo emite ``speed``/``freeze``
+    # cuando difieren del default; regresión §3.6).
+    speed: "ClipSpeed | None" = None
+    freeze: "ClipFreeze | None" = None
+
     @field_validator("start_s")
     @classmethod
     def _start_non_negative(cls, value: float) -> float:
@@ -379,7 +479,21 @@ class EditClip(BaseModel):
 
 
 class EditTrack(BaseModel):
-    """Una pista del editor: colección ordenada de clips de un mismo tipo."""
+    """Una pista del editor: colección ordenada de clips de un mismo tipo.
+
+    Banderas de pista (semántica consumida por ``operations.py`` y ``compile.py``):
+
+    - ``muted``: silencia una pista de AUDIO (voice/music/sfx). El compilador omite sus
+      clips de ``audioClips`` y de los ``MixTrack`` del ``AudioMixer``. En pistas VISUALES
+      no tiene efecto (el equivalente visual es ``hidden``).
+    - ``hidden``: oculta una pista VISUAL (video/image/title/overlay/subtitle) en el
+      preview y en el export: el compilador no emite sus clips. NO afecta a su presencia en
+      el timeline del frontend (la pista se sigue viendo y editando). Default neutro
+      (``False``): un documento previo sin este campo valida y compila IGUAL (regresión).
+    - ``locked``: protege la edición. Las operaciones que MUTAN clips de la pista
+      (trim/split/merge/delete/ripple/move/batch...) la rechazan con ``EditOperationError``.
+      NO afecta a preview ni export (una pista bloqueada se sigue renderizando).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -389,6 +503,7 @@ class EditTrack(BaseModel):
     order: int = 0
     muted: bool = False
     locked: bool = False
+    hidden: bool = False
     volume: float = 1.0
     clips: list[EditClip] = Field(default_factory=list)
 
@@ -452,6 +567,17 @@ class EditProject(BaseModel):
     project_id: int
     meta: EditMeta
     tracks: list[EditTrack] = Field(default_factory=list)
+    # Marcadores de la línea de tiempo (metadatos para el snap del frontend). Default []:
+    # un EditProject previo sin ``markers`` valida igual y compila IGUAL (regresión §3.4);
+    # el compilador NO los emite a inputProps (son metadatos, no afectan al render).
+    markers: list["EditMarker"] = Field(default_factory=list)
+    # Secuencias múltiples (FEAT-008). Una "secuencia" es un EditProject independiente
+    # identificado por ``sequence_id``; la persistencia (store.py) segmenta activo/undo/
+    # redo/history por ``sequence_id``. Defaults NEUTROS: un EditProject previo sin estos
+    # campos es la secuencia ``main``/``Principal`` y su render/inputProps NO cambia (el
+    # compilador no los emite; son metadatos de persistencia). Regresión §3.5/§3.6.
+    sequence_id: str = "main"
+    sequence_name: str = "Principal"
     source_timeline_version: int | None = None
 
     @property
@@ -477,4 +603,11 @@ class EditProject(BaseModel):
             for clip in track.clips:
                 if clip.id == clip_id:
                     return track, clip
+        return None
+
+    def marker_by_id(self, marker_id: str) -> "EditMarker | None":
+        """Devuelve el marcador con ese id (o ``None``)."""
+        for marker in self.markers:
+            if marker.id == marker_id:
+                return marker
         return None

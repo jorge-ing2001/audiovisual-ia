@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Seleccion multiple + copiar/pegar atributos. El estado de seleccion vive en el frontend; el backend recibe operaciones BATCH que aplican una accion a una lista de clip_ids como UN solo paso de historial (una Version). Copiar/pegar atributos copia propiedades (transform, volumen, estilo, titulo, overlay, transicion, velocidad) de un clip a otros respetando compatibilidad de tipo. Ver docs/EDITOR-ADVANCED.md secciones 4.3 y 4.4.",
+  "status": "completed",
+  "steps": [
+    "operations.py: op_batch_delete({clip_ids}) atomica (si algun clip no existe o su pista esta locked, falla entera sin mutar). Registrar en OPERATIONS.",
+    "operations.py: op_batch_move({clip_ids, delta_s}) que desplaza todos los clips por el mismo delta conservando offsets relativos; valida start_s>=0 resultante y pistas no locked. Registrar.",
+    "operations.py: op_copy_attributes({source_clip_id, target_clip_ids, attrs}) con attrs subset de {transform,gain,fade,style,title,overlay,transition,speed}; copia solo atributos aplicables al tipo del destino (no copia style de subtitulo a video; documentar en docstring si ignora o falla). No copia id/start_s/duration_s/asset_id. Registrar. Opcional op_batch_set reutilizando copy_attributes.",
+    "Espejos TS: no cambian tipos del modelo (son operaciones). Asegurar que compose.ts/types.ts siguen en paridad tras cualquier ajuste.",
+    "EditorWorkspace.tsx: estado de seleccion multiple (click + shift/ctrl, o marquesina); acciones de la barra: eliminar seleccion (op_batch_delete), mover seleccion (op_batch_move, integrado con el snap de FEAT-003), copiar atributos del clip activo y pegarlos a la seleccion (op_copy_attributes). lib/api.ts: funciones tipadas.",
+    "Tests: backend/tests/editor/ para op_batch_delete (atomicidad, rechazo por locked/inexistente), op_batch_move (conserva relativos, rechaza negativos), op_copy_attributes (copia por tipo, ignora/rechaza incompatibles, no toca posicion/recurso). Smoke manual del gesto de seleccion documentado en findings."
+  ],
+  "acceptance_criteria": [
+    "op_batch_delete y op_batch_move son atomicas (todo o nada) y quedan registradas en OPERATIONS; rechazan clips de pistas locked.",
+    "op_copy_attributes copia solo atributos compatibles con el tipo del destino y nunca id/start_s/duration_s/asset_id.",
+    "Un gesto batch produce UNA sola Version (undo lo revierte de golpe) -- verificado via el flujo /op + undo en un test de API o documentado.",
+    "frontend build/lint/typecheck y remotion typecheck pasan; pytest backend sin fallos ni regresion del baseline."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementado. operations.py: op_batch_delete({clip_ids}) ATOMICA (valida que todos existan y ninguna pista este locked ANTES de mutar; si falla no muta nada), op_batch_move({clip_ids,delta_s}) (mismo delta -> conserva offsets relativos; valida start_s>=0 resultante y pistas no locked; atomica), op_copy_attributes({source_clip_id,target_clip_ids,attrs}) con attrs subset de {transform,gain,fade,style,title,overlay,transition,speed}. Compatibilidad por tipo (_COPYABLE_ATTRS): cada atributo solo se copia a destinos cuyo kind lo admite; los no aplicables se IGNORAN en silencio (documentado en docstring); NUNCA copia id/start_s/duration_s/asset_id; atomica. 'speed' se acepta como atributo copiable pero es no-op sobre el modelo actual (el campo llega en FEAT-006), para no cambiar la superficie despues. Las tres registradas en OPERATIONS. UNA Version por gesto batch: cada op se aplica por /op existente (save_edit_project crea UNA Version); un batch = una op = una Version (undo lo revierte de golpe), verificado en test de API. Espejos TS: no cambian tipos del modelo (son operaciones); compose.ts/types.ts siguen en paridad. EditorWorkspace.tsx: estado de seleccion multiple (click simple reemplaza; Shift/Ctrl/Meta alterna), barra SelectionBar con eliminar seleccion (batch_delete), mover seleccion +/-0.5s (batch_move integrado con el snap de FEAT-003) y copiar atributos del clip activo a la seleccion por tipo (copy_attributes); resaltado distinto para clip activo vs seleccionados. lib/api.ts: batchDeleteClips/batchMoveClips/copyAttributes + tipo CopyableAttr. Tests: backend/tests/editor/test_batch_copy.py (29 tests: batch_delete atomicidad + rechazo locked/inexistente; batch_move conserva relativos + rechaza negativos/locked; copy_attributes por tipo + ignora incompatibles + no toca posicion/recurso + atomicidad) y test_batch_gesture_is_single_version en test_editor_api.py (UNA Version + undo revierte el batch). Verificacion EN VERDE: pytest 396 passed/2 skipped (baseline 351/2); frontend build/lint/typecheck OK; remotion typecheck OK. Smoke manual (navegador) de la seleccion multiple y copiar/pegar: no automatizable en sandbox; UI conectada a ops reales (una Version por gesto)."
+}

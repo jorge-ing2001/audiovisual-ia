@@ -14,7 +14,6 @@ Los motores resuelven sus proveedores vía el registry; este router solo orquest
 
 from __future__ import annotations
 
-import re
 import uuid
 from pathlib import Path
 
@@ -37,34 +36,31 @@ from app.models.schemas import (
 )
 from app.storage.db import get_db
 from app.storage.media import ensure_project_workspace
+from app.storage.uploads import (
+    ALLOWED_IMAGE_CONTENT_TYPES as _ALLOWED_IMAGE_CONTENT_TYPES,
+)
+from app.storage.uploads import (
+    ALLOWED_IMAGE_EXTS as _ALLOWED_IMAGE_EXTS,
+)
+from app.storage.uploads import (
+    ALLOWED_OVERLAY_CONTENT_TYPES as _ALLOWED_OVERLAY_CONTENT_TYPES,
+)
+from app.storage.uploads import (
+    ALLOWED_OVERLAY_EXTS as _ALLOWED_OVERLAY_EXTS,
+)
+from app.storage.uploads import (
+    MAX_UPLOAD_BYTES as _MAX_UPLOAD_BYTES,
+)
+from app.storage.uploads import (
+    safe_stem as _safe_stem,
+)
 
 router = APIRouter(tags=["generation"])
 
-# Validación de subida de imagen propia (FEAT-B).
-# Extensiones y content-types admitidos para recursos visuales del usuario.
-_ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-_ALLOWED_IMAGE_CONTENT_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-    "image/gif",
-}
-# Overlays/logos/marcas de agua (FEAT-006): además de los rasters admite SVG (vectorial),
-# que se valida por MIME + tamaño (Pillow no decodifica SVG).
-_ALLOWED_OVERLAY_EXTS = _ALLOWED_IMAGE_EXTS | {".svg"}
-_ALLOWED_OVERLAY_CONTENT_TYPES = _ALLOWED_IMAGE_CONTENT_TYPES | {
-    "image/svg+xml",
-}
-# Tamaño máximo razonable de una imagen subida (15 MB).
-_MAX_UPLOAD_BYTES = 15 * 1024 * 1024
-
-
-def _safe_stem(name: str) -> str:
-    """Normaliza el nombre original a un stem seguro para el sistema de ficheros."""
-    stem = Path(name or "").stem
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
-    return stem[:64] or "imagen"
+# Validación de subida de imagen propia (FEAT-B) + overlay (FEAT-006). Las constantes y el
+# normalizador ``_safe_stem`` viven ahora en ``app.storage.uploads`` (FEAT-007: módulo
+# compartido con el editor), re-exportados aquí con los mismos nombres para no cambiar el
+# comportamiento (los tests de subida de imagen/overlay siguen pasando).
 
 
 @router.post(

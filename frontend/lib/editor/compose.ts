@@ -15,7 +15,7 @@ import type {
   EditTrack,
   SubtitlePreset,
 } from "@/lib/editor/types";
-import { AUDIO_KINDS, VISUAL_KINDS } from "@/lib/editor/types";
+import { AUDIO_KINDS, VISUAL_HIDE_KINDS, VISUAL_KINDS } from "@/lib/editor/types";
 
 // Forma de inputProps (espejo de remotion/src/types.ts::EditProps).
 export interface EditTransformInput {
@@ -30,6 +30,20 @@ export interface EditTransformInput {
 export interface EditTransitionInput {
   type: "none" | "fade" | "slide" | "wipe";
   durationInFrames: number;
+}
+
+// Velocidad/congelación compiladas (espejo de _visual_clip_props en compile.py). Solo
+// presentes cuando difieren del default (regresión: sin ellas, el clip es idéntico).
+export interface EditSpeedInput {
+  rate: number;
+  reverse: boolean;
+}
+
+export interface EditFreezeInput {
+  atFrame: number;
+  holdInFrames: number;
+  atS: number;
+  holdS: number;
 }
 
 export interface EditVisualClipInput {
@@ -47,6 +61,11 @@ export interface EditVisualClipInput {
   effects: { type: string; params: Record<string, unknown> }[];
   trackId: string;
   trackOrder: number;
+  // Detach de audio (FEAT-005): solo presente (true) cuando mute_source_audio.
+  muted?: boolean;
+  // Velocidad/congelación (FEAT-006): solo presentes cuando difieren del default.
+  speed?: EditSpeedInput;
+  freeze?: EditFreezeInput;
 }
 
 export interface EditSubtitleStyleInput {
@@ -272,7 +291,7 @@ function visualProps(
   ): EditTransitionInput | null =>
     tr ? { type: tr.type, durationInFrames: framesLen(tr.duration_s, fps) } : null;
 
-  return {
+  const props: EditVisualClipInput = {
     id: clip.id,
     kind: clip.kind === "video" ? "video" : "image",
     from: frameAt(clip.start_s, fps),
@@ -288,6 +307,25 @@ function visualProps(
     trackId: track.id,
     trackOrder: track.order,
   };
+  // Detach de audio (FEAT-005): muted SOLO cuando el flag está activo (regresión).
+  if (clip.mute_source_audio) props.muted = true;
+  // Velocidad (FEAT-006): speed SOLO cuando difiere del default (rate != 1 o reverse).
+  const speed = clip.speed;
+  if (speed && (speed.rate !== 1.0 || speed.reverse)) {
+    props.speed = { rate: round(speed.rate, 6), reverse: speed.reverse };
+  }
+  // Congelación (FEAT-006): freeze SOLO cuando está definido. atFrame/holdInFrames en
+  // frames del origen; atS/holdS los segundos originales.
+  const freeze = clip.freeze;
+  if (freeze) {
+    props.freeze = {
+      atFrame: frameAt(freeze.at_s, fps),
+      holdInFrames: framesLen(freeze.hold_s, fps),
+      atS: round(freeze.at_s),
+      holdS: round(freeze.hold_s),
+    };
+  }
+  return props;
 }
 
 function subtitleProps(clip: EditClip, fps: number): EditSubtitleClipInput {
@@ -468,6 +506,14 @@ export function compileEditInputProps(
 
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
   for (const track of tracks) {
+    // Pista VISUAL oculta (hidden): se omiten sus clips (espejo de compile.py). Con
+    // hidden=false (default) el inputProps es idéntico al baseline (regresión).
+    if (
+      track.hidden &&
+      (VISUAL_HIDE_KINDS as readonly string[]).includes(track.kind)
+    ) {
+      continue;
+    }
     for (const clip of track.clips) {
       if (!clip.enabled) continue;
       if ((VISUAL_KINDS as readonly string[]).includes(clip.kind)) {

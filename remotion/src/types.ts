@@ -84,6 +84,23 @@ export type EditEffectProps = {
   params: Record<string, unknown>;
 };
 
+// Control de velocidad compilado (espejo de _visual_clip_props en compile.py). Opcional:
+// solo llega cuando rate != 1.0 o reverse (regresión: sin él, el clip es idéntico).
+export type EditSpeedProps = {
+  rate: number;
+  reverse: boolean;
+};
+
+// Congelación de fotograma compilada (espejo de _visual_clip_props). Opcional: solo llega
+// cuando el clip tiene freeze definido. Los frames son del ORIGEN (atFrame) y de la
+// duración congelada (holdInFrames); atS/holdS son los segundos originales (depuración).
+export type EditFreezeProps = {
+  atFrame: number;
+  holdInFrames: number;
+  atS: number;
+  holdS: number;
+};
+
 export type EditVisualClipProps = {
   id: string;
   kind: "video" | "image";
@@ -99,6 +116,12 @@ export type EditVisualClipProps = {
   effects?: EditEffectProps[];
   trackId?: string;
   trackOrder?: number;
+  // Detach de audio (FEAT-005): true si el <OffthreadVideo> no debe reproducir su audio de
+  // origen (el audio se oye por el clip voice desvinculado). Opcional (solo si true).
+  muted?: boolean;
+  // Velocidad/congelación (FEAT-006). Opcionales: solo llegan cuando difieren del default.
+  speed?: EditSpeedProps | null;
+  freeze?: EditFreezeProps | null;
 };
 
 export type EditSubtitlePreset =

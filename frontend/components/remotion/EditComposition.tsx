@@ -219,6 +219,7 @@ const transformToCss = (
 
 const VisualClip: React.FC<{ clip: EditVisualClipInput }> = ({ clip }) => {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const { objectFit, transform } = transformToCss(clip.transform);
   const inT: EditTransitionInput | null = clip.transitionIn;
   const outT: EditTransitionInput | null = clip.transitionOut;
@@ -246,11 +247,41 @@ const VisualClip: React.FC<{ clip: EditVisualClipInput }> = ({ clip }) => {
     transform,
   };
 
+  // FEAT-005: el <OffthreadVideo> no reproduce su audio de origen cuando el clip está
+  // detachado (muted). Por defecto el preview/export ya iba mudo (el audio lo componen los
+  // clips <Audio>/el AudioMixer), de modo que `?? true` preserva el baseline.
+  const videoMuted = clip.muted ?? true;
+  // FEAT-006: velocidad de reproducción del vídeo (playbackRate). El reverse real del
+  // vídeo NO se reproduce en preview (Remotion no reproduce al revés sin origen
+  // pre-invertido): se muestra el clip normal con un indicador "invertido (se aplica en
+  // export)". El reverse de VÍDEO se difiere al camino de export (ver findings §8).
+  const speed = clip.speed ?? null;
+  const playbackRate = speed && speed.rate > 0 ? speed.rate : 1;
+  const reverseIndicator = !!(speed && speed.reverse);
+  // FEAT-006: congelación de fotograma. Se fija el <OffthreadVideo> al frame del origen
+  // (startFrom/endAt al mismo frame) para mostrar el fotograma fijo durante el tramo.
+  const freeze = clip.freeze ?? null;
+
   return (
     <AbsoluteFill style={{ opacity }}>
       {clip.src ? (
         clip.kind === "video" ? (
-          <OffthreadVideo src={clip.src} style={mediaStyle} muted />
+          freeze ? (
+            <OffthreadVideo
+              src={clip.src}
+              style={mediaStyle}
+              muted={videoMuted}
+              startFrom={Math.max(0, Math.round(freeze.atFrame))}
+              endAt={Math.max(1, Math.round(freeze.atFrame) + 1)}
+            />
+          ) : (
+            <OffthreadVideo
+              src={clip.src}
+              style={mediaStyle}
+              muted={videoMuted}
+              playbackRate={playbackRate}
+            />
+          )
         ) : (
           <Img src={clip.src} style={mediaStyle} />
         )
@@ -268,6 +299,24 @@ const VisualClip: React.FC<{ clip: EditVisualClipInput }> = ({ clip }) => {
           {clip.kind} · recurso sin resolver
         </AbsoluteFill>
       )}
+      {reverseIndicator ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 12,
+            bottom: 12,
+            padding: "4px 10px",
+            borderRadius: 6,
+            backgroundColor: "rgba(0,0,0,0.6)",
+            color: "#fde047",
+            fontFamily: "sans-serif",
+            fontSize: Math.max(12, Math.round(fps * 0.6)),
+            fontWeight: 700,
+          }}
+        >
+          invertido (se aplica en export)
+        </div>
+      ) : null}
     </AbsoluteFill>
   );
 };

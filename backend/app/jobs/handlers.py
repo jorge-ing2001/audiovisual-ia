@@ -65,13 +65,15 @@ def edit_export_handler(payload: dict | None, job_id: int) -> dict:
     project_id = (payload or {}).get("project_id")
     if project_id is None:
         raise ValueError("El job edit_export requiere 'project_id' en el payload.")
+    # Secuencia a exportar (FEAT-008). Default 'main': sin el campo, igual que antes.
+    sequence = (payload or {}).get("sequence") or "main"
 
     with session_scope() as session:
         project = session.get(Project, int(project_id))
         if project is None:
             raise ValueError(f"Proyecto {project_id} no encontrado para el export de edición.")
 
-        edit_project = load_active_edit_project(project, session)
+        edit_project = load_active_edit_project(project, session, sequence)
         if edit_project is None:
             raise ValueError(
                 f"El proyecto {project_id} no tiene un EditProject; abre el editor "

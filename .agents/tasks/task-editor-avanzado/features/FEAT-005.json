@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Desvincular audio y video (detach). Separa la pista de audio de un clip de video: crea un clip de audio nuevo (pista voice) con el mismo asset_id/rango/tiempos y marca el clip de video para no reproducir su audio de origen. Operacion pura; la extraccion real del audio la hace FFmpeg en export via el MixTrack del nuevo clip. Ver docs/EDITOR-ADVANCED.md secciones 4.5 y 5.4.",
+  "status": "completed",
+  "steps": [
+    "model.py: anadir 'mute_source_audio: bool = False' a EditClip (default neutro). Documentar: en un clip visual video indica que su pista de audio de origen no suena (el audio se oye por el clip de audio desvinculado).",
+    "operations.py: op_detach_audio({clip_id, target_track_id?}) -- para un clip video, crea un EditClip kind='voice' en la pista indicada (o crea una pista voice si no existe, patron de import_subtitles) con mismo asset_id/start_s/duration_s/source_in_s/source_out_s/gain, y pone mute_source_audio=True en el clip de video. Rechaza clips no-video. Registrar en OPERATIONS.",
+    "compile.py: en _visual_clip_props emitir 'muted': true SOLO cuando clip.mute_source_audio es True (regresion: por defecto no se emite o se mantiene el valor actual). El nuevo clip de audio aporta su MixTrack normalmente via compile_audio_tracks.",
+    "Espejos: anadir mute_source_audio a frontend/lib/editor/types.ts; replicar la emision condicional en frontend/lib/editor/compose.ts. EditComposition (remotion/src y frontend/components/remotion, IDENTICOS): el <OffthreadVideo> del preview usa muted={clip.muted ?? ...} para no duplicar el audio con el nuevo clip voice.",
+    "EditorWorkspace.tsx + api.ts: accion 'Desvincular audio' en el inspector/menu contextual de un clip de video que llama a op_detach_audio.",
+    "Tests: backend/tests/editor/ para op_detach_audio (crea clip voice correcto, crea pista si falta, marca mute_source_audio, rechaza no-video) y compile (emite muted solo con el flag; el clip voice produce su MixTrack). Regresion: clip sin el flag compila igual que el baseline."
+  ],
+  "acceptance_criteria": [
+    "op_detach_audio crea un clip de audio equivalente en una pista voice (creandola si no existe) y marca mute_source_audio en el clip de video; rechaza clips no-video (422).",
+    "compile_remotion_props emite 'muted': true para el clip de video SOLO cuando mute_source_audio=True; sin el flag el inputProps es identico al baseline.",
+    "El clip de audio desvinculado aporta su MixTrack (compile_audio_tracks) con el mismo delay_s/gain/recorte.",
+    "Los DOS espejos de EditComposition quedan identicos; frontend build/lint/typecheck y remotion typecheck pasan; pytest backend sin fallos."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementado. model.py: EditClip.mute_source_audio: bool = False (default neutro). operations.py: op_detach_audio({clip_id, target_track_id?}) registrada en OPERATIONS; para un clip kind='video' crea un EditClip kind='voice' en la pista voice destino (reutiliza la primera voice no bloqueada, o la indicada via target_track_id, o CREA 'track_voice' con patron de op_add_track) con el MISMO asset_id/start_s/duration_s/source_in_s/source_out_s/gain y pone mute_source_audio=True en el clip de video; id del clip de voz determinista '<clip_id>_audio' sin colision. Rechaza (EditOperationError->422) clips no-video, clips sin asset_id, pistas locked y target_track_id inexistente/no-voice. copy_attributes (FEAT-004): 'speed' pasa de no-op a copiar de verdad el submodelo ClipSpeed (preparado aqui, consumido por FEAT-006). compile.py: _visual_clip_props emite 'muted': true SOLO cuando mute_source_audio (emision condicional; sin el flag el inputProps es identico al baseline). El clip voice aporta su MixTrack via compile_audio_tracks (delay_s/gain/atrim normales). Espejos TS: mute_source_audio + ClipSpeed/ClipFreeze en frontend/lib/editor/types.ts; 'muted?' condicional en frontend/lib/editor/compose.ts (EditVisualClipInput) y remotion/src/types.ts (EditVisualClipProps). Los DOS EditComposition (remotion/src y frontend/components/remotion) IDENTICOS: <OffthreadVideo muted={clip.muted ?? true}> (el ?? true preserva el baseline, que ya iba mudo porque el audio lo componen los clips <Audio>/el AudioMixer; con el flag sigue mudo y no se duplica con el clip voice). lib/api.ts: detachAudio() tipada. EditorWorkspace.tsx: boton 'Desvincular audio' en el inspector del clip de video (SpeedFreezeControls), deshabilitado si ya esta desvinculado. Tests: backend/tests/editor/test_detach_audio.py (12 tests: crea clip voice correcto, crea pista si falta, reutiliza voice existente, honra target_track_id, marca el flag, rechaza no-video/locked/target-malo; compile emite muted solo con flag; el clip voice produce su MixTrack; REGRESION sin flag = baseline). VERIFICACION EN VERDE: pytest 427 passed/3 skipped (baseline FEAT-004 era 396/2; +31 tests puros de FEAT-005+FEAT-006, +1 skip del export de FEAT-006); frontend npm run build/lint/typecheck OK; remotion typecheck OK; npm test 28/28. REGRESION confirmada: un clip sin mute_source_audio compila identico (no emite 'muted'). Smoke manual (navegador) del boton: no automatizable en sandbox; UI conectada a la op real."
+}
