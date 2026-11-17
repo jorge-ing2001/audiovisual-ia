@@ -32,6 +32,12 @@ class Project(Base):
     resolution: Mapped[str] = mapped_column(String(16), default="1080p")
     status: Mapped[str] = mapped_column(String(32), default="draft")
     provider_overrides: Mapped[dict | None] = mapped_column(JSON, default=None)
+    # Administracion (FEAT-002, Bloque 4): carpeta logica y etiquetas.
+    # 'folder' agrupa proyectos en un nivel; 'tags' se persiste como JSON (lista de
+    # strings), igual que provider_overrides. Ambos opcionales y compatibles con
+    # proyectos existentes (folder=NULL, tags=NULL -> [] en lectura via esquema).
+    folder: Mapped[str | None] = mapped_column(String(200), default=None)
+    tags: Mapped[list | None] = mapped_column(JSON, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     scripts: Mapped[list["Script"]] = relationship(

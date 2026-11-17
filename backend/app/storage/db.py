@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -55,12 +55,60 @@ def _session_factory() -> sessionmaker[Session]:
     return _SessionLocal
 
 
+# Columnas de administracion de Project que create_all NO anade a una tabla ya existente
+# (FEAT-002, Bloque 4). Se incorporan con una migracion ligera e idempotente para SQLite.
+# Cada entrada: nombre -> definicion de columna (tipo + NULL por defecto, compatible con
+# proyectos existentes).
+_PROJECT_ADMIN_COLUMNS: dict[str, str] = {
+    "folder": "TEXT",
+    "tags": "JSON",
+}
+
+
+def _ensure_project_columns(engine: Engine) -> None:
+    """Migracion idempotente: anade ``folder``/``tags`` a ``projects`` si faltan (SQLite).
+
+    ``Base.metadata.create_all`` crea tablas que faltan pero NO altera tablas ya
+    existentes, de modo que una BD de un proyecto en uso no incorporaria las columnas
+    nuevas. Esta rutina las anade sin recrear la tabla ni perder datos:
+
+    1. Solo actua sobre SQLite (``engine.dialect.name == 'sqlite'``); otros dialectos se
+       gestionan con migraciones propias (Fase 4) y aqui es un no-op.
+    2. Lee el esquema real con ``PRAGMA table_info('projects')`` y arma el conjunto de
+       columnas presentes.
+    3. Por cada columna objetivo que NO exista, ejecuta ``ALTER TABLE ... ADD COLUMN`` con
+       un default compatible (NULL). Si ya existe, NO ejecuta el ALTER (evita el error
+       'duplicate column name' de SQLite).
+
+    Es seguro de repetir: la decision se toma SIEMPRE a partir del esquema real justo
+    antes de cada ALTER, nunca a ciegas. Una segunda pasada es un no-op.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info('projects')")).fetchall()
+        if not rows:
+            # La tabla aun no existe (p. ej. BD vacia antes de create_all): nada que migrar.
+            return
+        existing = {row[1] for row in rows}  # row[1] = nombre de columna
+        for name, coltype in _PROJECT_ADMIN_COLUMNS.items():
+            if name not in existing:
+                conn.execute(
+                    text(f"ALTER TABLE projects ADD COLUMN {name} {coltype}")
+                )
+
+
 def init_db() -> None:
     """Crea las tablas declaradas en los modelos ORM si no existen."""
     # Importa los modelos para poblar los metadatos antes de create_all.
     from app import models  # noqa: F401
 
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    # Migracion idempotente de columnas de administracion (FEAT-002): corre tras create_all
+    # en cada arranque de forma segura y repetible.
+    _ensure_project_columns(engine)
 
 
 def get_session() -> Session:

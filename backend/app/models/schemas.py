@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # --------------------------------------------------------------------------- #
 # Project
@@ -26,6 +26,16 @@ class ProjectCreate(BaseModel):
     aspect_ratio: str = "16:9"
     resolution: str = "1080p"
     provider_overrides: dict | None = None
+    # Administración (FEAT-002). Defaults compatibles con el comportamiento previo.
+    folder: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def _tags_are_strings(cls, value: list[str]) -> list[str]:
+        if not all(isinstance(t, str) for t in value):
+            raise ValueError("tags debe ser una lista de strings")
+        return value
 
 
 class ProjectUpdate(BaseModel):
@@ -38,6 +48,25 @@ class ProjectUpdate(BaseModel):
     resolution: str | None = None
     status: str | None = None
     provider_overrides: dict | None = None
+    # Administración (FEAT-002). ``tags``: lista de strings (validada); ``folder``: carpeta.
+    folder: str | None = None
+    tags: list[str] | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def _tags_are_strings(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and not all(isinstance(t, str) for t in value):
+            raise ValueError("tags debe ser una lista de strings")
+        return value
+
+
+class ProjectDuplicateRequest(BaseModel):
+    """Cuerpo opcional de ``POST /projects/{id}/duplicate``.
+
+    ``name``: nombre del proyecto duplicado (si se omite, ``"<name> (copia)"``).
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class ProjectRead(BaseModel):
@@ -53,7 +82,15 @@ class ProjectRead(BaseModel):
     resolution: str
     status: str
     provider_overrides: dict | None
+    folder: str | None = None
+    # tags NULL en BD (proyectos previos) se normaliza a [] en lectura.
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _tags_default_empty(cls, value: object) -> list[str]:
+        return list(value) if value else []
 
 
 # --------------------------------------------------------------------------- #

@@ -16,7 +16,7 @@ from __future__ import annotations
 from app.engines.render import RenderEngine, RenderUnavailable
 from app.jobs.pipeline import generate_video_handler
 from app.jobs.worker import register_handler
-from app.models.entities import Project
+from app.models.entities import Job, Project
 from app.storage.db import session_scope
 
 
@@ -95,8 +95,49 @@ def edit_export_handler(payload: dict | None, job_id: int) -> dict:
         }
 
 
+def duplicate_project_handler(payload: dict | None, job_id: int) -> dict:
+    """Duplica un proyecto grande con seguimiento de estado (Bloque 4, FEAT-002).
+
+    ``payload`` trae ``project_id`` (origen) y ``new_name`` opcional. Carga el proyecto y
+    ejecuta ``duplicate_project`` con un callback que actualiza ``Job.progress`` conforme
+    copia ficheros (fracción sobre el total de ``path_map``). Al terminar bien, el worker
+    marca el job ``succeeded`` con ``result={'project_id': new_id}``. Ante fallo,
+    ``run_duplication_plan`` ya hace rollback de BD + limpieza del workspace parcial y la
+    excepción se propaga para que el worker marque el job ``failed`` con el mensaje.
+    """
+    from app.engines.admin.duplicate import duplicate_project
+
+    project_id = (payload or {}).get("project_id")
+    if project_id is None:
+        raise ValueError("El job duplicate_project requiere 'project_id' en el payload.")
+    new_name = (payload or {}).get("new_name")
+
+    with session_scope() as session:
+        project = session.get(Project, int(project_id))
+        if project is None:
+            raise ValueError(f"Proyecto {project_id} no encontrado para la duplicación.")
+
+        # El progreso se anota en la MISMA sesión (SQLite usa una sola conexión escritora:
+        # una segunda transacción mientras la duplicación tiene writes pendientes provocaría
+        # 'database is locked'). El flush avanza el progreso dentro de la transacción; se
+        # hace durable en el commit único de la duplicación.
+        job = session.get(Job, job_id)
+
+        def _set_progress(fraction: float) -> None:
+            if job is not None:
+                job.progress = max(0.0, min(1.0, fraction))
+                session.flush()
+
+        new_id = duplicate_project(
+            session, project, new_name=new_name, progress_cb=_set_progress
+        )
+        return {"project_id": new_id}
+
+
 register_handler("render", render_handler)
 # Pipeline end-to-end prompt->video (FEAT-006).
 register_handler("generate_video", generate_video_handler)
 # Export del editor multipista: re-render desde el EditProject (editor, FEAT-002).
 register_handler("edit_export", edit_export_handler)
+# Duplicación de proyectos grandes con seguimiento de estado (Bloque 4, FEAT-002).
+register_handler("duplicate_project", duplicate_project_handler)
