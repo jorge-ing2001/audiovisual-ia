@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "Emojis y elementos graficos + logotipos y marcas de agua como nuevo tipo de pista/clip 'overlay' en el EditProject, con subida de imagenes por el usuario, render en los DOS espejos y paridad preview/export. Emojis de texto van por subtitulo/titulo (caracteres Unicode); los emojis graficos, logos y marcas de agua son overlays (Asset imagen). Generaliza el patron de subida de imagen existente.",
+  "status": "completed",
+  "steps": [
+    "Modelo (model.py): ampliar TrackKind con 'overlay'. Anadir OverlayStyle(opacity:float=1.0, anchor_x:float=0.5, anchor_y:float=0.5, width_frac:float=0.2, rotation:float=0.0, tile:bool=False) con validadores de rango (0..1 en opacity/anchor/width_frac). Anadir EditClip.overlay: OverlayStyle|None. Extender _clips_match_track para 'overlay'. Un overlay valido: kind=='overlay', asset_id resoluble a imagen, overlay presente.",
+    "Subida (backend/app/api/generation.py o nuevo router): endpoint POST /projects/{id}/overlays/upload generalizando upload_scene_image: UploadFile imagen (PNG/JPG/JPEG/WEBP/GIF; SVG opcional validando MIME+tamano), validacion con Pillow (salvo SVG), guardar en overlays/uploads/ del workspace, crear Asset(kind='image', provider='upload', scene_id=None). Devolver AssetRead. Reutilizar _MAX_UPLOAD_BYTES y las listas de extensiones/content-types existentes.",
+    "Operaciones (operations.py): op_add_overlay(track_id,asset_id,start_s,duration_s,overlay?) y op_set_overlay_style(clip_id,...campos OverlayStyle). Reutilizar op_add_track para crear la pista overlay. Validar asset_id y kind. Registrar en OPERATIONS.",
+    "Compilador (compile.py): nueva lista overlayClips en compile_remotion_props con {id, from, durationInFrames, startS, durationS, src (via resolve_asset_src), overlay}. compile_audio_tracks NO cambia.",
+    "Tipos espejo: ampliar remotion/src/types.ts (EditOverlayClipProps + EditProps.overlayClips) y frontend/lib/editor/{types.ts,compose.ts} identicamente.",
+    "Render (DOS espejos, identico): nuevo componente OverlayClip que pinta <Img src=resolveSrc(...)> con opacity, width_frac (ancho = width_frac*width, alto por aspecto), posicion anchor_x/anchor_y y rotation; tile=true repite en mosaico (marca de agua). Dibujar overlayClips por encima de las visuales segun orden de pista. En el Player las src llegan como URL (assetDownloadUrl); en headless como ruta relativa + staticFile.",
+    "Frontend: en api.ts anadir uploadOverlay(projectId, file). En EditorWorkspace, pista overlay, control de subida de logo/overlay (-> uploadOverlay -> op add_overlay con el asset_id) y seccion de inspector (opacidad, tamano, rotacion, mosaico).",
+    "Tests: subida de overlay (patron de test_scene_image_upload.py: tipo/tamano/validez), operations (add_overlay/set_overlay_style + validaciones), compile (overlayClips en inputProps; regresion sin overlays). Opcional: overlay en el test de export (ffprobe, skip con razon).",
+    "Verificar backend + frontend + remotion."
+  ],
+  "acceptance_criteria": [
+    "TrackKind incluye 'overlay'; OverlayStyle y EditClip.overlay existen en el modelo y en los espejos TS, con extra='forbid' y validadores de rango.",
+    "POST /projects/{id}/overlays/upload sube una imagen valida, crea Asset(kind='image', provider='upload', scene_id=None) y rechaza ficheros invalidos/grandes con error accionable; test lo cubre.",
+    "op_add_overlay/op_set_overlay_style crean y editan clips de overlay, validan asset/kind y crean Version.",
+    "compile_remotion_props emite overlayClips; un EditProject sin overlays produce el MISMO inputProps que antes (regresion).",
+    "Los DOS EditComposition renderizan el overlay/logo/marca de agua (incl. mosaico) de forma identica entre preview y export; el logo se conserva en el MP4 exportado.",
+    "pytest backend sin regresiones; frontend y remotion en verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/editor backend/tests/test_scene_image_upload.py",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "OverlayStyle(opacity/anchor_x/anchor_y/width_frac/rotation/tile) con validadores de rango 0..1 + EditClip.overlay. Endpoint POST /projects/{id}/overlays/upload generaliza upload_scene_image (reutiliza _MAX_UPLOAD_BYTES y listas de extensiones/content-types; anade SVG validado por MIME+tamano, el resto por Pillow); guarda en overlays/uploads/ y crea Asset(kind='image', provider='upload', scene_id=None). Ops add_overlay/set_overlay_style en OPERATIONS. compile_remotion_props emite overlayClips SOLO si hay clips (src via resolve_asset_src: URL en preview, ruta relativa+staticFile en headless). OverlayClip identico en los dos espejos, con mosaico (background-image repeat) para marca de agua. Inspector de overlay (opacidad/tamano/rotacion/posicion/mosaico) + boton 'Subir logo/overlay' (uploadOverlay -> add_overlay) en EditorWorkspace; uploadOverlay en api.ts. Tests: test_overlay_upload.py (tipo/tamano/validez/SVG, patron de test_scene_image_upload.py), test_titles_overlays.py (ops+compile+regresion), test_edit_export.py (overlay/logo conservado en el MP4, PASA). Regresion confirmada: EditProject sin overlays => mismo inputProps (no se emite overlayClips)."
+}

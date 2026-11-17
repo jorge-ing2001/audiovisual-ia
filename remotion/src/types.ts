@@ -101,6 +101,14 @@ export type EditVisualClipProps = {
   trackOrder?: number;
 };
 
+export type EditSubtitlePreset =
+  | "classic"
+  | "tiktok"
+  | "reels"
+  | "shorts"
+  | "cinema"
+  | "clean";
+
 export type EditSubtitleStyleProps = {
   fontFamily: string;
   fontSize: number;
@@ -111,7 +119,35 @@ export type EditSubtitleStyleProps = {
   position: "top" | "center" | "bottom";
   x: number;
   y: number;
-  preset: "classic" | "tiktok";
+  preset: EditSubtitlePreset;
+  // Decoración fina (contorno/sombra/fondo). Opcionales: solo llegan cuando difieren del
+  // default, de modo que un subtítulo con estilo por defecto produce el MISMO inputProps
+  // que antes del Bloque 2 (regresión). El render cae al aspecto heredado cuando faltan.
+  outlineColor?: string;
+  outlineWidth?: number;
+  shadow?: boolean;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowX?: number;
+  shadowY?: number;
+  bgOpacity?: number;
+  bgPadding?: number;
+  bgRadius?: number;
+  // Karaoke (resaltado por palabra). Opcionales: solo llegan cuando karaoke=true, de
+  // modo que un subtítulo sin karaoke produce el MISMO inputProps que antes.
+  karaoke?: boolean;
+  highlightColor?: string;
+  highlightScale?: number;
+};
+
+// Una palabra del clip de subtítulo con su ventana en frames RELATIVOS al clip (espejo
+// de compile_remotion_props). Solo se emite cuando el clip tiene karaoke activo y words.
+export type EditSubtitleWordProps = {
+  text: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
 };
 
 export type EditSubtitleClipProps = {
@@ -122,6 +158,7 @@ export type EditSubtitleClipProps = {
   durationS: number;
   text: string;
   style?: EditSubtitleStyleProps | null;
+  words?: EditSubtitleWordProps[];
 };
 
 // Clip de audio para el PREVIEW del Player (voz/música/SFX). El compilador de
@@ -140,6 +177,79 @@ export type EditAudioClipProps = {
   volume: number;
 };
 
+// Estilo de un clip de título (texto animado). Espejo de TitleStyle (model.py):
+// tipografía + layout por anclaje (fracción del frame) + decoración fina heredada.
+export type EditTitleStyleProps = {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  align: "left" | "center" | "right";
+  anchorX: number;
+  anchorY: number;
+  kind: "intro" | "lower_third" | "credits" | "plain";
+  // Decoración fina (contorno/sombra/fondo) heredada de TextDecoration (siempre presente).
+  outlineColor: string;
+  outlineWidth: number;
+  shadow: boolean;
+  shadowColor: string;
+  shadowBlur: number;
+  shadowX: number;
+  shadowY: number;
+  bgOpacity: number;
+  bgPadding: number;
+  bgRadius: number;
+};
+
+// Animación de entrada/salida del título. Espejo de TitleAnimation (model.py).
+export type EditTitleAnimationProps = {
+  type:
+    | "none"
+    | "fade"
+    | "slide_up"
+    | "slide_down"
+    | "typewriter"
+    | "scale_in"
+    | "credits_roll";
+  durationInFrames: number;
+  durationS: number;
+  direction: "in" | "out" | "both";
+};
+
+export type EditTitleClipProps = {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  text: string;
+  style?: EditTitleStyleProps | null;
+  animation?: EditTitleAnimationProps | null;
+  trackOrder?: number;
+};
+
+// Estilo de un clip de overlay (imagen/logo/marca de agua). Espejo de OverlayStyle.
+export type EditOverlayStyleProps = {
+  opacity: number;
+  anchorX: number;
+  anchorY: number;
+  widthFrac: number;
+  rotation: number;
+  tile: boolean;
+};
+
+export type EditOverlayClipProps = {
+  id: string;
+  from: number;
+  durationInFrames: number;
+  startS: number;
+  durationS: number;
+  src?: string | null;
+  assetId?: number | null;
+  overlay?: EditOverlayStyleProps | null;
+  trackOrder?: number;
+};
+
 export type EditProps = {
   fps: number;
   width: number;
@@ -149,9 +259,18 @@ export type EditProps = {
   subtitleClips: EditSubtitleClipProps[];
   // Pistas de audio para el preview. Opcional: el export headless las silencia.
   audioClips?: EditAudioClipProps[];
+  // Títulos y overlays. Opcionales: solo llegan cuando hay clips, de modo que un
+  // EditProject sin títulos/overlays produce el MISMO inputProps que antes (regresión).
+  titleClips?: EditTitleClipProps[];
+  overlayClips?: EditOverlayClipProps[];
   // Silencia el audio del Player (true en el render de export para evitar doble
   // audio con el AudioMixer). En el preview del navegador va false.
   muted?: boolean;
+  // Zonas seguras verticales (fracción 0..1 del alto) de formatos 9:16. Opcionales:
+  // solo llegan cuando el formato las define (> 0); sin ellas, el render encuadra igual
+  // que antes (regresión 16:9). El overlay de subtítulos las respeta al posicionar.
+  safeTop?: number;
+  safeBottom?: number;
 };
 
 export const defaultEditProps: EditProps = {

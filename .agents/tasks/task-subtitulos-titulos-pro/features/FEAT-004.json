@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Contornos, sombras y fondos de texto finos + plantillas (presets) de subtitulos, incluidos TikTok/Reels/Shorts (formato 9:16 + zonas seguras). Amplia SubtitleStyle con control fino de decoracion de texto, anade un catalogo de presets (datos) y operaciones para aplicarlos, y respeta zonas seguras verticales en el render. Reutiliza y generaliza el estilo Classic/TikTok ya existente sin romper el render actual.",
+  "status": "completed",
+  "steps": [
+    "Modelo (backend/app/engines/editor/model.py): factorizar un mixin TextDecoration (outline_color:str='#000000', outline_width:float=0.0, shadow:bool=False, shadow_color:str='#000000', shadow_blur:float=0.0, shadow_x:float=0.0, shadow_y:float=0.0, bg_opacity:float=1.0, bg_padding:float=0.2, bg_radius:float=8.0) y componerlo en SubtitleStyle. Ampliar SubtitleStyle.preset a Literal['classic','tiktok','reels','shorts','cinema','clean']. Defaults neutros: documento viejo valida y se ve igual (outline_width=0 => se mantiene el textShadow heredado).",
+    "Presets (nuevo backend/app/engines/editor/presets.py, datos puros): SUBTITLE_PRESETS: dict[str, dict] con los valores de SubtitleStyle por preset (classic/tiktok/reels/shorts/cinema/clean) y FORMAT_PRESETS con {name, width, height, aspect_ratio, safe_top_frac, safe_bottom_frac} para 9:16 (1080x1920) Reels/Shorts/TikTok, 16:9 y 1:1. Helper subtitle_style_from_preset(preset)->SubtitleStyle.",
+    "Operaciones (operations.py): ampliar op_set_style para aceptar y validar los campos nuevos de TextDecoration y el preset extendido. Anadir op_apply_subtitle_preset (clip_id, preset) y op_apply_subtitle_preset_all (preset, opcional track_id); y op_set_format (width,height,aspect_ratio desde un FORMAT_PRESET o valores) que ajusta meta. Registrar en OPERATIONS.",
+    "Compilador (compile.py): emitir los campos nuevos de estilo en _subtitle_clip_props y (si aplica) las zonas seguras del formato en el inputProps global (safeTop/safeBottom) para que el render encuadre.",
+    "Tipos espejo: ampliar remotion/src/types.ts y frontend/lib/editor/{types.ts,compose.ts} identicamente (decoracion + preset ampliado + safe zones).",
+    "Render (DOS espejos, identico): en SubtitleOverlay construir WebkitTextStroke (outline_color/width), textShadow (shadow_*), backgroundColor con bg_opacity/padding/radius desde los campos nuevos; cuando estan en default, conservar EXACTAMENTE el aspecto actual (blackStroke TikTok / shadow+caja classic). Respetar safeTop/safeBottom del formato 9:16 al posicionar.",
+    "Frontend: en EditorWorkspace inspector, selector de preset de subtitulo, selector de formato (9:16/16:9/1:1) y controles de contorno/sombra/fondo, cableados a las ops. Dibujar guias de zona segura sobre el Player cuando el formato es vertical.",
+    "Tests: presets.py (cada preset produce SubtitleStyle valido), operations (apply_preset/set_format/set_style ampliado), compile (campos nuevos + safe zones en inputProps; regresion: estilo por defecto no cambia el inputProps).",
+    "Verificar backend + frontend + remotion."
+  ],
+  "acceptance_criteria": [
+    "SubtitleStyle expone contorno/sombra/fondo finos y preset ampliado; un EditProject con estilo por defecto produce el MISMO inputProps y el MISMO render que antes (regresion verificada).",
+    "SUBTITLE_PRESETS y FORMAT_PRESETS existen como datos; op_apply_subtitle_preset(_all) y op_set_format aplican preset/formato y crean Version.",
+    "Los presets tiktok/reels/shorts implican 9:16 con zonas seguras; el render posiciona subtitulos dentro de la zona segura.",
+    "El inspector permite elegir preset, formato y editar contorno/sombra/fondo, y el preview refleja el cambio en tiempo real.",
+    "pytest backend sin regresiones; frontend y remotion en verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/editor",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "Hecho. TextDecoration como mixin compuesto en SubtitleStyle (defaults neutros); preset Literal classic/tiktok/reels/shorts/cinema/clean. EditMeta gana safe_top_frac/safe_bottom_frac (default 0.0). presets.py con SUBTITLE_PRESETS (6) + FORMAT_PRESETS (16:9/1:1/tiktok/reels/shorts 9:16 1080x1920 con zonas seguras) + subtitle_style_from_preset + PRESET_FORMAT. operations.py: op_set_style ampliado (contorno/sombra/fondo + preset extendido), op_apply_subtitle_preset, op_apply_subtitle_preset_all, op_set_format; registradas en OPERATIONS. compile.py emite los campos de decoracion SOLO cuando difieren del default y safeTop/safeBottom SOLO cuando >0 (REGRESION: estilo por defecto => inputProps identico; verificado por test_compile_regression_default_style_props_unchanged y el de karaoke previo). Render en los DOS espejos EditComposition: WebkitTextStroke/textShadow/backgroundColor(rgba con bg_opacity) desde los campos nuevos, aspecto heredado cuando faltan, padding de zona segura. Espejos TS (remotion/src/types.ts, frontend/lib/editor/{types.ts,compose.ts}) ampliados identicamente. Frontend: selector de preset (apply_subtitle_preset), selector de formato (set_format), controles de contorno/sombra/fondo y guias de zona segura sobre el Player. Verificado: pytest 274 passed/2 skipped (baseline 235); frontend build/lint/typecheck y remotion typecheck en verde."
+}

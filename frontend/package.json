@@ -8,9 +8,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test \"tests/*.test.mjs\""
   },
   "dependencies": {
+    "@remotion/google-fonts": "^4.0.0",
     "@remotion/player": "^4.0.0",
     "next": "15.1.6",
     "react": "19.0.0",

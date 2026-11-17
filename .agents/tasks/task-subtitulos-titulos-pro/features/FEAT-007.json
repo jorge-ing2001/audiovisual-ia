@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-007",
+  "type": "feat",
+  "description": "Tipografias personalizadas iguales en preview y export, via @remotion/google-fonts y/o fuentes locales empaquetadas. Un catalogo cerrado de familias con licencia libre, cargadas por el loader de Remotion para que el Chromium headless y el navegador rendericen la MISMA fuente. El inspector ofrece solo familias del catalogo. Depende de que exista al menos subtitulo (FEAT-002) o titulo (FEAT-005) para elegir fuente.",
+  "status": "completed",
+  "steps": [
+    "Dependencias: npm install @remotion/google-fonts@^4.0.0 en remotion/ y frontend/ (misma major ^4.0.0 que remotion/@remotion/player). Si se usan fuentes locales, npm install @remotion/fonts@^4.0.0 y colocar los .ttf/.woff2 (licencia OFL/Apache) en remotion/public/fonts/ y servirlos tambien en el frontend. NOTA: requiere acceso al registro de paquetes; si la red lo impide, marcar el feature como blocked (retryable) o limitar el catalogo a fuentes locales ya presentes.",
+    "Catalogo (datos): modulo fonts.ts en remotion/src/ y espejo en frontend/lib/editor/ con FONT_CATALOG: {family, source:'google'|'local', file?}[] (p.ej. Inter, Montserrat, Roboto, Oswald, Bebas Neue, Anton, Lobster) y loadFont(family) que delega en @remotion/google-fonts/<Family> o @remotion/fonts loadFont por staticFile.",
+    "Carga en el render (DOS espejos): las EditComposition invocan loadFont para cada familia usada por subtitulos/titulos antes de renderizar (Remotion espera la promesa en headless -> determinista). font_family de SubtitleStyle/TitleStyle guarda el nombre de familia del catalogo.",
+    "Frontend: en el inspector, el control de fuente es un <select> de FONT_CATALOG (no texto libre), cableado a op_set_style / op_set_title_style. Al elegir una fuente, el Player la carga y el preview la muestra.",
+    "Documentacion/licencias: anotar en NOTICE y en docs/SUBTITLES-TITLES-PRO.md que solo se empaquetan fuentes con licencia libre; las Google Fonts se cargan por su loader. Catalogo cerrado por diseno (no fuentes propietarias).",
+    "Tests: test puro de que loadFont(family) acepta cada familia del catalogo y que font_family solo admite familias del catalogo a nivel de validacion del inspector (o un test de que el catalogo no esta vacio y las familias son unicas). Verificar remotion/frontend typecheck/build.",
+    "Verificar backend (sin regresiones) + frontend + remotion."
+  ],
+  "acceptance_criteria": [
+    "@remotion/google-fonts (y @remotion/fonts si aplica) en remotion/package.json y frontend/package.json con major ^4.0.0; o, si la red lo impide, catalogo de fuentes locales empaquetadas con su licencia.",
+    "FONT_CATALOG existe en ambos lados (remotion y frontend) con familias de licencia libre y loadFont(family) funcional.",
+    "Las EditComposition cargan la fuente seleccionada antes de renderizar, de modo que preview y export muestran la MISMA tipografia.",
+    "El inspector ofrece solo familias del catalogo (no texto libre) y el preview refleja el cambio de fuente.",
+    "NOTICE/docs documentan las licencias; frontend y remotion build/typecheck en verde; pytest backend sin regresiones."
+  ],
+  "verification": [
+    "cd remotion && npm run typecheck",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": "Se uso @remotion/google-fonts ^4.0.0 (resuelto 4.0.544) en remotion/ y frontend/: el registro npm estaba accesible en el sandbox, asi que NO hizo falta el fallback a fuentes locales (no se commitea ningun .ttf/.woff2; las familias se descargan del CDN de Google en render/preview). FONT_CATALOG en remotion/src/fonts.ts + espejo frontend/lib/editor/fonts.ts (familias Inter, Montserrat, Roboto, Oswald, Bebas Neue, Anton, Lobster; {family, source, css, category, license}). loadFont(family) delega en @remotion/google-fonts/<Family>; el loader registra delayRender interno asi que el headless espera la fuente. Ambas EditComposition (export y preview) llaman loadUsedFonts([...]) antes del JSX. Inspector: componente FontSelect (<select> del catalogo, NUNCA texto libre) cableado a set_style (subtitulo) y set_title_style (titulo); el valor guardado en font_family es el css del catalogo (Inter, sans-serif, etc.). Tests JS (node --experimental-strip-types --test): remotion/tests/fonts.test.mjs y frontend/tests/fonts.test.mjs (catalogo no vacio, familias unicas, loadFont acepta cada familia y rechaza las de fuera, paridad de familias remotion<->frontend). Export end-to-end con ffprobe (test_compose_edit_font_and_position_render) renderiza Montserrat/Oswald => preview y export usan la MISMA fuente. Licencias (OFL/Apache 2.0) documentadas en NOTICE y docs/SUBTITLES-TITLES-PRO.md 7.1. Regresion: un EditProject previo ya traia font_family='Inter, sans-serif' (default del modelo), que findFont resuelve al catalogo; el inputProps no cambia de forma (loadUsedFonts solo dispara cargas, no altera props)."
+}

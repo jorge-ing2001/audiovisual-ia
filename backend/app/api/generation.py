@@ -50,6 +50,12 @@ _ALLOWED_IMAGE_CONTENT_TYPES = {
     "image/webp",
     "image/gif",
 }
+# Overlays/logos/marcas de agua (FEAT-006): además de los rasters admite SVG (vectorial),
+# que se valida por MIME + tamaño (Pillow no decodifica SVG).
+_ALLOWED_OVERLAY_EXTS = _ALLOWED_IMAGE_EXTS | {".svg"}
+_ALLOWED_OVERLAY_CONTENT_TYPES = _ALLOWED_IMAGE_CONTENT_TYPES | {
+    "image/svg+xml",
+}
 # Tamaño máximo razonable de una imagen subida (15 MB).
 _MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 
@@ -226,6 +232,121 @@ def upload_scene_image(
             "width": width,
             "height": height,
             "bytes": len(data),
+        },
+    )
+    session.add(asset)
+    session.commit()
+    session.refresh(asset)
+    return asset
+
+
+@router.post(
+    "/projects/{project_id}/overlays/upload",
+    response_model=AssetRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def upload_overlay_image(
+    project_id: int,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_db),
+) -> Asset:
+    """Sube un overlay/logo/marca de agua a nivel de PROYECTO (FEAT-006).
+
+    Generaliza ``upload_scene_image`` para recursos gráficos del proyecto (no de una
+    escena): valida tipo (PNG/JPG/JPEG/WEBP/GIF/SVG) y tamaño (``_MAX_UPLOAD_BYTES``),
+    valida el contenido con Pillow (salvo SVG, que se comprueba por MIME + tamaño),
+    guarda el fichero en ``overlays/uploads/`` del workspace (bajo ``AIV_MEDIA_ROOT``,
+    servible con ``staticFile``/``GET /assets/{id}/download``) y crea un
+    ``Asset(kind='image', provider='upload', scene_id=None)`` reutilizable por
+    ``op add_overlay``. Devuelve ``AssetRead``.
+    """
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Proyecto no encontrado"
+        )
+
+    original_name = file.filename or ""
+    ext = Path(original_name).suffix.lower()
+    content_type = (file.content_type or "").lower()
+    is_svg = ext == ".svg" or content_type == "image/svg+xml"
+
+    # Validación de tipo: content-type de imagen admitido o extensión en la lista blanca.
+    is_image_ct = content_type in _ALLOWED_OVERLAY_CONTENT_TYPES
+    is_image_ext = ext in _ALLOWED_OVERLAY_EXTS
+    if not (is_image_ct or is_image_ext):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "El fichero no es una imagen admitida. Formatos permitidos: "
+                "PNG, JPG, JPEG, WEBP, GIF, SVG."
+            ),
+        )
+
+    data = file.file.read()
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El fichero subido está vacío.",
+        )
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"La imagen supera el tamaño máximo permitido "
+                f"({_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."
+            ),
+        )
+
+    width: int | None = None
+    height: int | None = None
+    if is_svg:
+        # SVG vectorial: Pillow no lo decodifica. Validación ligera de que parece XML/SVG.
+        head = data[:512].lstrip().lower()
+        if b"<svg" not in head and b"<?xml" not in head:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El fichero SVG no es válido o está dañado.",
+            )
+    else:
+        # Raster: validación del contenido real + dimensiones con Pillow.
+        try:
+            import io
+
+            from PIL import Image
+
+            with Image.open(io.BytesIO(data)) as img:
+                img.verify()
+            with Image.open(io.BytesIO(data)) as img2:
+                width, height = img2.size
+        except Exception as exc:  # noqa: BLE001 - cualquier fallo = no es imagen válida
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El fichero no es una imagen válida o está dañado.",
+            ) from exc
+
+    out_dir = ensure_project_workspace(project.id) / "overlays" / "uploads"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_ext = ext if ext in _ALLOWED_OVERLAY_EXTS else (".svg" if is_svg else ".png")
+    filename = f"overlay_{_safe_stem(original_name)}_{uuid.uuid4().hex[:8]}{safe_ext}"
+    out_path = out_dir / filename
+    out_path.write_bytes(data)
+
+    asset = Asset(
+        project_id=project.id,
+        scene_id=None,
+        kind="image",
+        path=str(out_path),
+        provider="upload",
+        meta={
+            "source": "upload",
+            "role": "overlay",
+            "original_filename": original_name or None,
+            "content_type": content_type or None,
+            "width": width,
+            "height": height,
+            "bytes": len(data),
+            "svg": is_svg,
         },
     )
     session.add(asset)

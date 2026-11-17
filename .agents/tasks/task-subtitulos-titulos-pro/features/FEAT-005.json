@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Titulos animados y creditos (intro, lower-thirds, creditos finales) como nuevo tipo de pista/clip 'title' en el EditProject, animados en Remotion con paridad preview/export. Anade el tipo de pista, TitleStyle/TitleAnimation, operaciones puras, el componente TitleOverlay en los DOS espejos y la compilacion a inputProps. Comparte el patron de 'nuevo tipo de clip/pista' con FEAT-006.",
+  "status": "completed",
+  "steps": [
+    "Modelo (model.py): ampliar TrackKind con 'title'. Anadir TitleAnimation(type: Literal['none','fade','slide_up','slide_down','typewriter','scale_in','credits_roll']='fade', duration_s:float=0.8, direction: Literal['in','out','both']='both') y TitleStyle (fuente/decoracion reutilizando el mixin TextDecoration de FEAT-004 o, si FEAT-005 va antes, definir el mixin aqui; align, anchor_x/anchor_y fracciones 0..1, kind: Literal['intro','lower_third','credits','plain']). Anadir EditClip.title: TitleStyle|None y EditClip.title_animation: TitleAnimation|None. Extender _clips_match_track para kind 'title'. Defaults retrocompatibles.",
+    "Operaciones (operations.py): op_add_track(kind,name,order?) para crear una pista title; op_add_title(track_id,text,start_s,duration_s,title?,animation?); op_set_title_style(clip_id,...campos TitleStyle); op_set_title_animation(clip_id,type,duration_s,direction). Validar que clip.kind=='title'. Registrar en OPERATIONS.",
+    "Presets (presets.py): TITLE_PRESETS (intro, lower_third, credits) con TitleStyle + TitleAnimation por defecto.",
+    "Compilador (compile.py): nueva lista titleClips en compile_remotion_props con {id, from, durationInFrames, startS, durationS, text, style, animation}, ordenada por from. compile_audio_tracks NO cambia.",
+    "Tipos espejo: ampliar remotion/src/types.ts (EditTitleClipProps + EditProps.titleClips) y frontend/lib/editor/{types.ts,compose.ts} identicamente.",
+    "Render (DOS espejos, identico): nuevo componente TitleOverlay que pinta clip.text con TitleStyle en anchor_x/anchor_y (fraccion del frame) y anima con interpolate/spring segun title_animation.type (fade/slide/scale/typewriter/credits_roll). lower_third = layout preposicionado. Dibujar titleClips por encima de las visuales segun orden de pista.",
+    "Frontend: en EditorWorkspace, pista de titulos en el timeline, boton 'Anadir titulo' (op add_title, creando pista con add_track si no existe) y seccion de inspector de titulo (texto, estilo, animacion, tipo). Reutilizar ui.tsx.",
+    "Tests: operations (add_track/add_title/set_title_style/set_title_animation + validaciones), compile (titleClips en inputProps; regresion sin titulos), model (validacion de pista title). Opcional: incluir un titulo en el test de export (ffprobe streams/duracion, skip con razon).",
+    "Verificar backend + frontend + remotion."
+  ],
+  "acceptance_criteria": [
+    "TrackKind incluye 'title'; TitleStyle/TitleAnimation y EditClip.title/title_animation existen en el modelo y en los espejos TS, con extra='forbid' y defaults retrocompatibles.",
+    "op_add_track/op_add_title/op_set_title_style/op_set_title_animation crean y editan clips de titulo, validan invariantes y crean Version; tests lo cubren.",
+    "compile_remotion_props emite titleClips; un EditProject sin titulos produce el MISMO inputProps que antes (regresion).",
+    "Los DOS EditComposition renderizan titulos animados (intro/lower-third/creditos) de forma identica entre preview y export.",
+    "El inspector permite anadir y editar un titulo y el preview lo refleja en tiempo real.",
+    "pytest backend sin regresiones; frontend y remotion en verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/editor",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "Implementado junto con FEAT-006 en la misma rama. TrackKind ampliado con 'title' y 'overlay'; nuevo VISUAL_RENDER_KINDS. TitleAnimation/TitleStyle (reutiliza mixin TextDecoration) + EditClip.title/title_animation. Ops add_track/add_title/set_title_style/set_title_animation en OPERATIONS. TITLE_PRESETS (intro/lower_third/credits) + title_preset(). compile_remotion_props emite titleClips SOLO si hay clips (regresion verificada: un EditProject sin titulos produce el mismo inputProps). TitleOverlay identico en remotion/src/EditComposition.tsx y frontend/components/remotion/EditComposition.tsx (fade/slide_up/slide_down/scale_in/typewriter/credits_roll). Tres espejos TS actualizados. Inspector de titulo en EditorWorkspace + boton 'Anadir titulo'. Tests: test_titles_overlays.py, test_model.py (pistas title), test_edit_export.py (titulo+overlay render con ffprobe, PASA en el sandbox). Backend 309 passed/2 skipped (baseline 274). frontend build/lint/typecheck y remotion typecheck en verde."
+}

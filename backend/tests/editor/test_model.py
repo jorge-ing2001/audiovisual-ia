@@ -100,3 +100,69 @@ def test_roundtrip_serialization() -> None:
     restored = EditProject.model_validate(payload)
     assert restored.duration_s == pytest.approx(project.duration_s)
     assert restored.kind == EDIT_PROJECT_KIND
+
+
+def test_title_track_accepts_title_clip() -> None:
+    from app.engines.editor.model import TitleAnimation, TitleStyle
+
+    track = EditTrack(
+        id="track_title",
+        kind="title",
+        clips=[
+            EditClip(
+                id="t0",
+                track_id="track_title",
+                kind="title",
+                start_s=0.0,
+                duration_s=2.0,
+                text="Hola",
+                title=TitleStyle(),
+                title_animation=TitleAnimation(),
+            )
+        ],
+    )
+    assert track.clips[0].title.font_size == 96
+
+
+def test_title_style_rejects_bad_anchor() -> None:
+    from app.engines.editor.model import TitleStyle
+
+    with pytest.raises(ValidationError):
+        TitleStyle(anchor_y=1.5)
+
+
+def test_overlay_track_accepts_overlay_clip() -> None:
+    from app.engines.editor.model import OverlayStyle
+
+    track = EditTrack(
+        id="track_overlay",
+        kind="overlay",
+        clips=[
+            EditClip(
+                id="o0",
+                track_id="track_overlay",
+                kind="overlay",
+                start_s=0.0,
+                duration_s=3.0,
+                asset_id=1,
+                overlay=OverlayStyle(opacity=0.5, tile=True),
+            )
+        ],
+    )
+    assert track.clips[0].overlay.tile is True
+
+
+def test_overlay_style_rejects_out_of_range() -> None:
+    from app.engines.editor.model import OverlayStyle
+
+    with pytest.raises(ValidationError):
+        OverlayStyle(width_frac=2.0)
+
+
+def test_title_overlay_clip_must_match_track() -> None:
+    with pytest.raises(ValidationError):
+        EditTrack(
+            id="track_title",
+            kind="title",
+            clips=[EditClip(id="c", track_id="track_title", kind="overlay")],
+        )

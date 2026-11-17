@@ -130,6 +130,55 @@ def test_convert_total_duration_matches_timeline():
     assert edit.duration_s == pytest.approx(5.0)
 
 
+def test_convert_fills_words_from_palabras_json(tmp_path):
+    """Con un Asset(kind='srt') que apunta a palabras.json, los clips de subtítulo se
+    rellenan con las palabras del cue en tiempos RELATIVOS al clip."""
+    import json
+
+    # palabras.json con tiempos GLOBALES (ms), como lo produce el motor de voz.
+    # Cue 1 (escena 0): 0.0..1.0s -> "Hola mundo". Cue 2 (escena 1): 2.5..4.5s -> "Adios".
+    words_path = tmp_path / "palabras.json"
+    words_path.write_text(
+        json.dumps(
+            [
+                {"text": "Hola", "startMs": 100, "endMs": 400},
+                {"text": "mundo", "startMs": 500, "endMs": 900},
+                {"text": "Adios", "startMs": 3000, "endMs": 3800},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    project, assets = _project_and_assets()
+    assets.append(
+        _asset(40, "srt", path=str(tmp_path / "subs.srt"), meta={"words_json": str(words_path)})
+    )
+    edit = timeline_to_edit_project(_timeline(), project, assets)
+    sub_track = next(t for t in edit.tracks if t.kind == "subtitle")
+
+    # Clip 1 arranca en 0.0: palabras "Hola" (0.1..0.4) y "mundo" (0.5..0.9) relativas.
+    clip0 = sub_track.clips[0]
+    assert [w.text for w in clip0.words] == ["Hola", "mundo"]
+    assert clip0.words[0].start_s == pytest.approx(0.1)
+    assert clip0.words[0].end_s == pytest.approx(0.4)
+    assert clip0.words[1].start_s == pytest.approx(0.5)
+    assert clip0.words[1].end_s == pytest.approx(0.9)
+
+    # Clip 2 arranca en 2.5: "Adios" (3.0..3.8 global) -> 0.5..1.3 relativo.
+    clip1 = sub_track.clips[1]
+    assert [w.text for w in clip1.words] == ["Adios"]
+    assert clip1.words[0].start_s == pytest.approx(0.5)
+    assert clip1.words[0].end_s == pytest.approx(1.3)
+
+
+def test_convert_without_srt_leaves_words_empty():
+    """Sin Asset(kind='srt'), los clips de subtítulo quedan sin palabras (words=[])."""
+    project, assets = _project_and_assets()
+    edit = timeline_to_edit_project(_timeline(), project, assets)
+    sub_track = next(t for t in edit.tracks if t.kind == "subtitle")
+    assert all(clip.words == [] for clip in sub_track.clips)
+
+
 def test_convert_video_track_used_when_video_src_present():
     tl = _timeline()
     tl.scenes[0].video_src = "/media/clip0.mp4"

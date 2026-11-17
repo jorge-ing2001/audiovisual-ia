@@ -1,0 +1,29 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Import/Export de subtitulos en SRT, VTT y ASS conectados a la pista subtitle del EditProject. Reutiliza Cue/write_srt de backend/app/engines/voice/subtitles.py (SRT ya existe) y anade parsers/serializadores VTT y ASS puros, mas endpoints de import/export en el router del editor. Independiente de FEAT-004..008 (puede paralelizarse).",
+  "status": "completed",
+  "steps": [
+    "Nuevo modulo puro backend/app/engines/editor/subtitle_formats.py con: parse_srt(text)->list[Cue]; dump_vtt(cues)->str y parse_vtt(text)->list[Cue] (cabecera WEBVTT, milisegundos con '.', tolera NOTE y cues sin indice); dump_ass(cues, style=None)->str y parse_ass(text)->list[Cue] ([Script Info]+[V4+ Styles]+[Events] Dialogue). Reutilizar Cue y el formateo de voice/subtitles.py; helpers puros de color hex<->ASS (&HBBGGRR) con tests.",
+    "Adaptadores: cues_to_subtitle_clips(cues, track_id, fps?)->list[EditClip] y subtitle_clips_to_cues(edit_project)->list[Cue] (tiempos absolutos <-> cues), en subtitle_formats.py o convert.py.",
+    "Endpoints en backend/app/api/editor.py: GET /projects/{id}/editor/subtitles/export?format=srt|vtt|ass (serializa la pista subtitle activa y devuelve el fichero con content-type y nombre subtitles.<ext>); POST /projects/{id}/editor/subtitles/import (UploadFile .srt/.vtt/.ass + query mode=replace|append) que parsea, reemplaza/anade la pista subtitle, crea Version via save_edit_project y devuelve EditProjectRead. Validar formato por extension+contenido (patron de upload_scene_image). Guardar el fichero importado como Asset(kind='srt') para trazabilidad.",
+    "Cliente frontend: en frontend/lib/api.ts anadir exportSubtitles(projectId, format) (descarga) e importSubtitles(projectId, file, mode) (multipart). Exponer botones en el inspector/EditorWorkspace (import/export) reutilizando ui.tsx.",
+    "Tests puros: backend/tests/editor/test_subtitle_formats.py con round-trip para los tres formatos: parse(dump(cues)) preserva tiempos (ms) y texto; conversion de color hex<->ASS; parse_vtt tolera cabecera/NOTE. Test de API: import de un .srt/.vtt/.ass de ejemplo reemplaza la pista subtitle y export devuelve un fichero coherente (usar TestClient como test_editor_api.py).",
+    "Verificar backend + frontend typecheck/build."
+  ],
+  "acceptance_criteria": [
+    "subtitle_formats.py expone parse/dump para SRT, VTT y ASS sobre list[Cue], 100% puro (sin ffmpeg).",
+    "Round-trip de los tres formatos preserva tiempos (al ms) y texto; test lo demuestra.",
+    "GET .../editor/subtitles/export?format=... devuelve SRT/VTT/ASS coherente con la pista subtitle editada (refleja tiempos/texto editados en el editor).",
+    "POST .../editor/subtitles/import reemplaza o anade la pista subtitle, crea Version (undo/redo funciona sobre ella) y rechaza ficheros con formato invalido con error accionable.",
+    "El fichero importado queda como Asset(kind='srt') del proyecto.",
+    "pytest backend sin regresiones y frontend build/lint/typecheck en verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/editor/test_subtitle_formats.py backend/tests/editor/test_editor_api.py",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": "Hecho. Nuevo modulo puro backend/app/engines/editor/subtitle_formats.py: parse_srt, dump_vtt/parse_vtt (cabecera WEBVTT, ms con '.', tolera NOTE y cues sin indice/con id y ajustes align:), dump_ass/parse_ass ([Script Info]+[V4+ Styles]+[Events] Dialogue, ignora overrides {\\...}), helpers hex<->ASS (&HBBGGRR, invierte a BGR) y adaptadores cues_to_subtitle_clips/subtitle_clips_to_cues. Reutiliza Cue y _fmt de voice/subtitles.py; SRT export en memoria via _dump_srt en el router (write_srt sigue intacto). Endpoints en api/editor.py: GET .../editor/subtitles/export?format=srt|vtt|ass (Content-Disposition subtitles.<ext>, refleja los tiempos/texto editados) y POST .../editor/subtitles/import (UploadFile .srt/.vtt/.ass + mode=replace|append; valida extension+contenido UTF-8, parsea, actualiza la pista subtitle, crea Version via save_edit_project y guarda Asset(kind='srt', provider='import')). Cliente frontend: exportSubtitles/importSubtitles en lib/api.ts + barra en EditorWorkspace (selector de formato de export, modo de import y subida de fichero). Tests: test_subtitle_formats.py (round-trip SRT/VTT/ASS preservando tiempos al ms y texto; color hex<->ASS; parse_vtt tolera cabecera/NOTE; adaptadores) y en test_editor_api.py (import replace/append, rechazo de extension/contenido invalido, export coherente de los 3 formatos, 404 sin abrir). Verificado: pytest 274 passed/2 skipped; frontend build/lint/typecheck en verde. python-multipart ya instalado (no nuevas deps)."
+}

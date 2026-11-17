@@ -1,0 +1,7 @@
+{
+  "task_id": "task-subtitulos-titulos-pro",
+  "task_description": "Bloque 2 del roadmap del editor (Subtitulos y Titulos Pro, para cortometrajes), sobre el editor multipista EditProject ya en main (Bloque 0). Implementar, todo REAL y con paridad preview/export: subtitulos karaoke (resaltar la palabra pronunciada) usando palabras.json/WordTiming existentes; import/export SRT/VTT/ASS; plantillas de subtitulos (presets de estilo) incl. TikTok/Reels/Shorts (9:16 + zonas seguras); titulos animados y creditos (intro/lower-thirds/creditos) como pista/clip title; tipografias personalizadas (@remotion/google-fonts y/o fuentes locales, iguales en preview y export); contornos/sombras/fondos de texto; emojis y elementos graficos + logos y marcas de agua como pista overlay (subida de imagenes); y posicionamiento visual drag&drop sobre el preview mapeado a operaciones del clip. Conservar TODOS los modulos y la arquitectura, no simplificar, nada decorativo; mantener la via de pago conmutable intacta y los DOS espejos de EditComposition en paridad. Entregable de la fase de PLAN: docs/SUBTITLES-TITLES-PRO.md + este desglose; la implementacion se conduce despues feature a feature.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006", "FEAT-007", "FEAT-008"],
+  "blocked_reason": null
+}

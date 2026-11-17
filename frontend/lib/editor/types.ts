@@ -14,9 +14,17 @@ export type TrackKind =
   | "voice"
   | "music"
   | "sfx"
-  | "subtitle";
+  | "subtitle"
+  | "title"
+  | "overlay";
 
 export const VISUAL_KINDS: readonly TrackKind[] = ["video", "image"];
+export const VISUAL_RENDER_KINDS: readonly TrackKind[] = [
+  "video",
+  "image",
+  "title",
+  "overlay",
+];
 export const AUDIO_KINDS: readonly TrackKind[] = ["voice", "music", "sfx"];
 
 export interface VisualTransform {
@@ -41,6 +49,14 @@ export interface ClipEffect {
   params: Record<string, unknown>;
 }
 
+export type SubtitlePreset =
+  | "classic"
+  | "tiktok"
+  | "reels"
+  | "shorts"
+  | "cinema"
+  | "clean";
+
 export interface SubtitleStyle {
   font_family: string;
   font_size: number;
@@ -51,7 +67,78 @@ export interface SubtitleStyle {
   position: "top" | "center" | "bottom";
   x: number;
   y: number;
-  preset: "classic" | "tiktok";
+  preset: SubtitlePreset;
+  // Decoración fina (contorno/sombra/fondo). Defaults NEUTROS: un documento previo sin
+  // estos campos valida igual y produce el mismo render (espejo de TextDecoration).
+  outline_color: string;
+  outline_width: number;
+  shadow: boolean;
+  shadow_color: string;
+  shadow_blur: number;
+  shadow_x: number;
+  shadow_y: number;
+  bg_opacity: number;
+  bg_padding: number;
+  bg_radius: number;
+  // Karaoke (resaltado por palabra). Defaults neutros (karaoke=false): un documento
+  // previo sin estos campos se trata igual que antes.
+  karaoke: boolean;
+  highlight_color: string;
+  highlight_scale: number;
+}
+
+// Palabra con tiempos RELATIVOS al inicio del clip de subtítulo (karaoke).
+export interface SubtitleWord {
+  text: string;
+  start_s: number;
+  end_s: number;
+}
+
+// Animación de un clip de título (espejo de TitleAnimation en model.py).
+export interface TitleAnimation {
+  type:
+    | "none"
+    | "fade"
+    | "slide_up"
+    | "slide_down"
+    | "typewriter"
+    | "scale_in"
+    | "credits_roll";
+  duration_s: number;
+  direction: "in" | "out" | "both";
+}
+
+// Estilo de un clip de título (espejo de TitleStyle en model.py). Reutiliza los campos de
+// decoración fina de TextDecoration (contorno/sombra/fondo) + layout por anclaje.
+export interface TitleStyle {
+  font_family: string;
+  font_size: number;
+  color: string;
+  bold: boolean;
+  align: "left" | "center" | "right";
+  anchor_x: number;
+  anchor_y: number;
+  kind: "intro" | "lower_third" | "credits" | "plain";
+  outline_color: string;
+  outline_width: number;
+  shadow: boolean;
+  shadow_color: string;
+  shadow_blur: number;
+  shadow_x: number;
+  shadow_y: number;
+  bg_opacity: number;
+  bg_padding: number;
+  bg_radius: number;
+}
+
+// Estilo de un clip de overlay (imagen/logo/marca de agua). Espejo de OverlayStyle.
+export interface OverlayStyle {
+  opacity: number;
+  anchor_x: number;
+  anchor_y: number;
+  width_frac: number;
+  rotation: number;
+  tile: boolean;
 }
 
 export interface EditClip {
@@ -80,6 +167,14 @@ export interface EditClip {
   // Subtitle
   text: string | null;
   style: SubtitleStyle | null;
+  words: SubtitleWord[];
+
+  // Title (texto animado: intro/lower-third/créditos). Reutiliza `text`.
+  title: TitleStyle | null;
+  title_animation: TitleAnimation | null;
+
+  // Overlay (imagen/logo/marca de agua). Reutiliza `asset_id`.
+  overlay: OverlayStyle | null;
 }
 
 export interface EditTrack {
@@ -98,6 +193,10 @@ export interface EditMeta {
   width: number;
   height: number;
   aspect_ratio: string;
+  // Zonas seguras verticales (fracción 0..1 del alto) de formatos 9:16. Defaults
+  // neutros (0.0): un documento 16:9 previo valida igual (espejo de EditMeta backend).
+  safe_top_frac: number;
+  safe_bottom_frac: number;
 }
 
 export interface EditProject {

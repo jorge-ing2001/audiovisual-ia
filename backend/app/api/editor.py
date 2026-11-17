@@ -20,13 +20,26 @@ el render pesado lo hace el ``edit_export_handler`` en el worker.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+import uuid
+from pathlib import Path
+
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
+from fastapi.responses import Response
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engines.editor.convert import timeline_to_edit_project
-from app.engines.editor.model import EditProject
+from app.engines.editor.model import EditProject, EditTrack
 from app.engines.editor.operations import EditOperationError, apply_operation
 from app.engines.editor.store import (
     history,
@@ -35,17 +48,48 @@ from app.engines.editor.store import (
     save_edit_project,
     undo,
 )
+from app.engines.editor.subtitle_formats import (
+    cues_to_subtitle_clips,
+    dump_ass,
+    dump_vtt,
+    parse_ass,
+    parse_srt,
+    parse_vtt,
+    subtitle_clips_to_cues,
+)
 from app.engines.render.timeline import TimelineBuilder
+from app.engines.voice.subtitles import Cue, _fmt
 from app.jobs.queue import JobQueue
-from app.models.entities import Job, Project
+from app.models.entities import Asset, Job, Project
 from app.models.schemas import (
     EditExportResponse,
     EditOperationRequest,
     EditProjectRead,
 )
 from app.storage.db import get_db
+from app.storage.media import ensure_project_workspace
 
 router = APIRouter(tags=["editor"])
+
+# Import/export de subtítulos (FEAT-003): formatos admitidos y validación.
+_SUBTITLE_EXTS = {".srt", ".vtt", ".ass"}
+# Tope razonable para un fichero de subtítulos de texto (5 MB).
+_MAX_SUBTITLE_BYTES = 5 * 1024 * 1024
+# Content-type y extensión por formato de export.
+_EXPORT_META = {
+    "srt": ("application/x-subrip; charset=utf-8", "srt"),
+    "vtt": ("text/vtt; charset=utf-8", "vtt"),
+    "ass": ("text/x-ssa; charset=utf-8", "ass"),
+}
+
+
+def _dump_srt(cues: list[Cue]) -> str:
+    """Serializa cues a SRT en memoria (mismo formato que ``voice.subtitles.write_srt``)."""
+    ordered = sorted(cues, key=lambda c: c.t0)
+    return "\n".join(
+        f"{k + 1}\n{_fmt(c.t0)} --> {_fmt(c.t1)}\n{c.text}\n"
+        for k, c in enumerate(ordered)
+    )
 
 
 def _get_project_or_404(session: Session, project_id: int) -> Project:
@@ -184,6 +228,157 @@ def editor_history(project_id: int, session: Session = Depends(get_db)) -> list[
     """Lista las versiones del historial de edición (para una UI de historial)."""
     project = _get_project_or_404(session, project_id)
     return history(project, session)
+
+
+@router.get("/projects/{project_id}/editor/subtitles/export")
+def export_subtitles(
+    project_id: int,
+    format: str = Query("srt", pattern="^(srt|vtt|ass)$"),
+    session: Session = Depends(get_db),
+) -> Response:
+    """Serializa la pista ``subtitle`` activa y devuelve ``subtitles.<ext>``.
+
+    El contenido refleja los tiempos/texto EDITADOS en el editor (paridad editor↔
+    subtítulos): extrae los cues de los clips de la pista ``subtitle`` del ``EditProject``
+    activo y los vuelca en el formato pedido (SRT/VTT/ASS).
+    """
+    project = _get_project_or_404(session, project_id)
+    edit_project = load_active_edit_project(project, session)
+    if edit_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El editor no se ha abierto; usa POST .../editor/open primero.",
+        )
+
+    cues = subtitle_clips_to_cues(edit_project)
+    if format == "vtt":
+        body = dump_vtt(cues)
+    elif format == "ass":
+        style = next(
+            (
+                c.style
+                for t in edit_project.tracks
+                if t.kind == "subtitle"
+                for c in t.clips
+                if c.style is not None
+            ),
+            None,
+        )
+        body = dump_ass(cues, style)
+    else:
+        body = _dump_srt(cues)
+
+    content_type, ext = _EXPORT_META[format]
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="subtitles.{ext}"'},
+    )
+
+
+@router.post("/projects/{project_id}/editor/subtitles/import", response_model=EditProjectRead)
+def import_subtitles(
+    project_id: int,
+    file: UploadFile = File(...),
+    mode: str = Query("replace", pattern="^(replace|append)$"),
+    session: Session = Depends(get_db),
+) -> EditProjectRead:
+    """Importa un ``.srt/.vtt/.ass`` y reemplaza/añade la pista ``subtitle`` del editor.
+
+    Valida formato por extensión + contenido (patrón de ``upload_scene_image``), parsea a
+    cues, los convierte a clips de la pista ``subtitle``, crea una ``Version`` vía
+    ``save_edit_project`` y guarda el fichero importado como ``Asset(kind='srt')`` para
+    trazabilidad. Con ``mode=replace`` sustituye los clips de la pista; con ``append`` los
+    añade a los existentes.
+    """
+    project = _get_project_or_404(session, project_id)
+    edit_project = load_active_edit_project(project, session)
+    if edit_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El editor no se ha abierto; usa POST .../editor/open primero.",
+        )
+
+    original_name = file.filename or ""
+    ext = Path(original_name).suffix.lower()
+    if ext not in _SUBTITLE_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El fichero no es un subtítulo admitido. Formatos: SRT, VTT, ASS.",
+        )
+
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El fichero de subtítulos está vacío.",
+        )
+    if len(raw) > _MAX_SUBTITLE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"El subtítulo supera el tamaño máximo permitido "
+                f"({_MAX_SUBTITLE_BYTES // (1024 * 1024)} MB)."
+            ),
+        )
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El fichero de subtítulos no es texto UTF-8 válido.",
+        ) from exc
+
+    parser = {".srt": parse_srt, ".vtt": parse_vtt, ".ass": parse_ass}[ext]
+    cues = parser(text)
+    if not cues:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No se encontraron subtítulos en el fichero; comprueba que el formato "
+                f"({ext[1:].upper()}) es correcto y no está vacío."
+            ),
+        )
+
+    # Localiza (o crea) la pista subtitle del proyecto.
+    updated = edit_project.model_copy(deep=True)
+    track = next((t for t in updated.tracks if t.kind == "subtitle"), None)
+    if track is None:
+        order = max((t.order for t in updated.tracks), default=-1) + 1
+        track = EditTrack(id="track_subtitle", kind="subtitle", name="Subtítulos", order=order)
+        updated.tracks.append(track)
+
+    new_clips = cues_to_subtitle_clips(cues, track.id, id_prefix=f"clip_sub_{uuid.uuid4().hex[:8]}")
+    if mode == "replace":
+        track.clips = new_clips
+    else:
+        track.clips = list(track.clips) + new_clips
+
+    # Persiste el fichero importado como Asset(kind='srt') para trazabilidad.
+    out_dir = ensure_project_workspace(project.id) / "srt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"import_{uuid.uuid4().hex[:8]}{ext}"
+    out_path.write_bytes(raw)
+    session.add(
+        Asset(
+            project_id=project.id,
+            scene_id=None,
+            kind="srt",
+            path=str(out_path),
+            provider="import",
+            meta={
+                "source": "import",
+                "format": ext[1:],
+                "original_filename": original_name or None,
+                "mode": mode,
+                "cues": len(new_clips),
+            },
+        )
+    )
+    session.commit()
+
+    saved = save_edit_project(project, session, updated)
+    return _as_read(saved)
 
 
 @router.post(
