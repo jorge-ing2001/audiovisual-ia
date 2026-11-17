@@ -27,6 +27,8 @@ from collections.abc import Callable
 from app.engines.editor.model import (
     AUDIO_KINDS,
     VISUAL_KINDS,
+    ClipFreeze,
+    ClipSpeed,
     ClipTransition,
     EditClip,
     EditMarker,
@@ -37,6 +39,7 @@ from app.engines.editor.model import (
     SubtitleStyle,
     TitleAnimation,
     TitleStyle,
+    TrackKind,
     VisualTransform,
 )
 from app.engines.editor.presets import (
@@ -84,6 +87,9 @@ __all__ = [
     "op_batch_delete",
     "op_batch_move",
     "op_copy_attributes",
+    "op_detach_audio",
+    "op_set_speed",
+    "op_set_freeze",
 ]
 
 #: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
@@ -1504,10 +1510,11 @@ def _copy_one_attr(source: EditClip, target: EditClip, attr: str) -> None:
     elif attr == "overlay":
         target.overlay = source.overlay.model_copy(deep=True) if source.overlay else None
     elif attr == "speed":
-        # ``speed`` aún no es un campo del modelo (llega en FEAT-006). Mientras tanto se
-        # acepta como atributo copiable pero es un no-op sobre el modelo actual, de modo
-        # que la superficie de la operación no cambie cuando se añada el campo.
-        pass
+        # FEAT-006: ``speed`` ya es un campo del modelo (``ClipSpeed``). Se copia tal cual
+        # (copia profunda del submodelo o ``None``) entre clips compatibles (visual/audio).
+        # NO se recalcula ``duration_s`` del destino: copiar atributos no reposiciona ni
+        # redimensiona el clip destino (la duración es del destino, como id/start_s).
+        target.speed = source.speed.model_copy(deep=True) if source.speed else None
 
 
 def op_copy_attributes(edit_project: EditProject, params: dict) -> EditProject:
@@ -1589,6 +1596,220 @@ def op_copy_attributes(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Desvincular audio y vídeo (detach): crea un clip ``voice`` equivalente (FEAT-005)
+# --------------------------------------------------------------------------- #
+
+
+def _ensure_voice_track(
+    edit_project: EditProject, target_track_id: str | None
+) -> EditTrack:
+    """Devuelve la pista ``voice`` destino del detach, creándola si no existe.
+
+    Si ``target_track_id`` se indica, debe existir y ser de kind ``voice`` (y no estar
+    bloqueada). Si no se indica, usa la primera pista ``voice`` del proyecto o, si no hay
+    ninguna, crea una (patrón de creación de pista de ``import_subtitles``/``op_add_track``:
+    id determinista ``track_voice`` sin colisión, ``order`` al final).
+    """
+    if target_track_id is not None:
+        if not isinstance(target_track_id, str) or not target_track_id:
+            raise EditOperationError("detach_audio: 'target_track_id' debe ser str no vacío.")
+        track = edit_project.track_by_id(target_track_id)
+        if track is None:
+            raise EditOperationError(
+                f"detach_audio: la pista destino {target_track_id!r} no existe."
+            )
+        if track.kind != "voice":
+            raise EditOperationError(
+                f"detach_audio: la pista destino {track.id!r} no es de voz ({track.kind!r})."
+            )
+        _require_unlocked(track)
+        return track
+
+    for track in edit_project.tracks:
+        if track.kind == "voice" and not track.locked:
+            return track
+
+    # No hay pista voice utilizable: la creamos (id determinista sin colisión).
+    track_id = "track_voice"
+    if edit_project.track_by_id(track_id) is not None:
+        n = 2
+        while edit_project.track_by_id(f"{track_id}_{n}") is not None:
+            n += 1
+        track_id = f"{track_id}_{n}"
+    order = max((t.order for t in edit_project.tracks), default=-1) + 1
+    voice_track = EditTrack(id=track_id, kind="voice", name="Voz (desvinculada)", order=order)
+    edit_project.tracks.append(voice_track)
+    return voice_track
+
+
+def op_detach_audio(edit_project: EditProject, params: dict) -> EditProject:
+    """Desvincula el audio de origen de un clip de VÍDEO a una pista ``voice``.
+
+    Params: ``clip_id`` (clip de kind ``video``) y, opcional, ``target_track_id`` (pista
+    ``voice`` destino; si se omite usa la primera pista ``voice`` o crea una).
+
+    Crea un ``EditClip`` kind ``voice`` en la pista destino con el MISMO ``asset_id``,
+    ``start_s``, ``duration_s``, ``source_in_s``, ``source_out_s`` y ``gain`` del clip de
+    vídeo, y marca ``mute_source_audio=True`` en el clip de vídeo (para que su
+    ``<OffthreadVideo>`` deje de reproducir el audio de origen en el preview y no se
+    duplique con el nuevo clip). Es una operación PURA: no decodifica el fichero; la
+    extracción real del audio la hace FFmpeg en export vía el ``MixTrack`` del nuevo clip.
+
+    Rechaza clips que no sean de vídeo (los de imagen no tienen audio; los de audio ya son
+    audio) y pistas bloqueadas.
+    """
+    result = _clone(edit_project)
+    video_track, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
+    if clip.kind != "video":
+        raise EditOperationError(
+            f"detach_audio: el clip {clip.id!r} no es de vídeo ({clip.kind!r}); "
+            "solo se puede desvincular el audio de un clip de vídeo."
+        )
+    if clip.asset_id is None:
+        raise EditOperationError(
+            f"detach_audio: el clip {clip.id!r} no tiene recurso (asset_id) del que "
+            "extraer audio."
+        )
+
+    voice_track = _ensure_voice_track(result, params.get("target_track_id"))
+
+    # Id determinista del nuevo clip de voz (sin colisión en todo el proyecto).
+    base_id = f"{clip.id}_audio"
+    voice_clip_id = base_id
+    n = 2
+    while result.find_clip(voice_clip_id) is not None:
+        voice_clip_id = f"{base_id}_{n}"
+        n += 1
+
+    voice_clip = EditClip(
+        id=voice_clip_id,
+        track_id=voice_track.id,
+        kind="voice",
+        start_s=clip.start_s,
+        duration_s=clip.duration_s,
+        source_in_s=clip.source_in_s,
+        source_out_s=clip.source_out_s,
+        asset_id=clip.asset_id,
+        gain=clip.gain,
+    )
+    voice_track.clips.append(voice_clip)
+
+    # Marca el clip de vídeo para no reproducir su audio de origen (no se duplica).
+    clip.mute_source_audio = True
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Velocidad (acelerar/ralentizar/invertir) y congelar fotograma (FEAT-006)
+# --------------------------------------------------------------------------- #
+
+
+def op_set_speed(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija la velocidad (``rate``/``reverse``) de un clip y recalcula su duración.
+
+    Params: ``clip_id`` y, opcionales, ``rate`` (> 0) y ``reverse`` (bool). Los no
+    indicados conservan su valor actual (o el default neutro si no había ``speed``).
+
+    Recálculo de ``duration_s`` (§3.2): si el clip tiene rango de origen recortable
+    (``source_out_s``), ``duration_s = (source_out_s - source_in_s) / rate``; si no (p. ej.
+    una imagen sin rango), se escala la duración actual por el factor respecto al ``rate``
+    anterior (``duration_s *= rate_anterior / rate``). Con ``rate=1.0`` y ``reverse=False``
+    deja el clip en su estado neutro (``speed=None``), de modo que un clip que vuelve a
+    velocidad normal no emite ``speed`` (regresión).
+
+    Rechaza ``reverse=True`` en clips que no sean de vídeo (``image``/audio no se invierten
+    en el MVP visual; el audio invertido se difiere, ver §8). Valida ``rate > 0``.
+    """
+    result = _clone(edit_project)
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
+
+    current = clip.speed or ClipSpeed()
+    new_rate = current.rate
+    new_reverse = current.reverse
+    if "rate" in params:
+        new_rate = _require_number(params, "rate")
+        if new_rate <= 0:
+            raise EditOperationError("set_speed: 'rate' debe ser > 0.")
+    if "reverse" in params:
+        value = params["reverse"]
+        if not isinstance(value, bool):
+            raise EditOperationError("set_speed: 'reverse' debe ser booleano.")
+        new_reverse = value
+
+    if new_reverse and clip.kind != "video":
+        raise EditOperationError(
+            f"set_speed: no se puede invertir (reverse) un clip {clip.kind!r}; "
+            "solo clips de vídeo."
+        )
+
+    # Recálculo de la duración en la línea de tiempo a partir del rate nuevo.
+    span = _source_span(clip)
+    if span is not None:
+        new_duration = round(span / new_rate, 3)
+    else:
+        # Sin rango de origen: escala la duración actual por el cambio de rate.
+        old_rate = current.rate
+        new_duration = round(clip.duration_s * (old_rate / new_rate), 3)
+    if new_duration <= 0:
+        raise EditOperationError("set_speed: la duración resultante debe ser > 0.")
+    clip.duration_s = new_duration
+
+    # Estado neutro => limpia ``speed`` (regresión: no emite nada en el compilador).
+    if new_rate == 1.0 and not new_reverse:
+        clip.speed = None
+    else:
+        clip.speed = ClipSpeed(rate=float(new_rate), reverse=new_reverse)
+    return result
+
+
+def op_set_freeze(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija (o limpia) la congelación de fotograma de un clip visual.
+
+    Params: ``clip_id``, ``at_s`` (instante del origen a congelar, >= 0) y ``hold_s``
+    (duración de la congelación en la línea de tiempo). ``hold_s=0`` (o ``freeze=None``)
+    LIMPIA la congelación.
+
+    Validaciones: ``at_s`` debe caer dentro del rango del origen (``source_in_s`` ..
+    ``source_out_s`` si hay rango recortable); ``hold_s`` no puede ser negativo. Rechaza
+    clips de ``image`` (ya son estáticos, el freeze es redundante) y clips no visuales.
+    """
+    result = _clone(edit_project)
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
+    if clip.kind == "image":
+        raise EditOperationError(
+            "set_freeze: un clip de imagen ya es estático; la congelación es redundante."
+        )
+    if clip.kind not in VISUAL_KINDS:
+        raise EditOperationError(
+            f"set_freeze: el clip {clip.id!r} no es visual ({clip.kind!r})."
+        )
+
+    hold_s = _require_number(params, "hold_s")
+    if hold_s < 0:
+        raise EditOperationError("set_freeze: 'hold_s' no puede ser negativo.")
+    # hold_s = 0 limpia la congelación (default neutro => no emite freeze).
+    if hold_s == 0:
+        clip.freeze = None
+        return result
+
+    at_s = _require_number(params, "at_s")
+    if at_s < 0:
+        raise EditOperationError("set_freeze: 'at_s' no puede ser negativo.")
+    # ``at_s`` debe caer dentro del rango del origen recortable (si se conoce).
+    lower = clip.source_in_s
+    upper = clip.source_out_s
+    if at_s < lower - 1e-6 or (upper is not None and at_s > upper + 1e-6):
+        upper_txt = "∞" if upper is None else round(upper, 3)
+        raise EditOperationError(
+            f"set_freeze: 'at_s'={at_s} fuera del origen del clip "
+            f"({round(lower, 3)}..{upper_txt})."
+        )
+
+    clip.freeze = ClipFreeze(at_s=round(float(at_s), 3), hold_s=round(float(hold_s), 3))
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
@@ -1625,6 +1846,9 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "batch_delete": op_batch_delete,
     "batch_move": op_batch_move,
     "copy_attributes": op_copy_attributes,
+    "detach_audio": op_detach_audio,
+    "set_speed": op_set_speed,
+    "set_freeze": op_set_freeze,
 }
 
 

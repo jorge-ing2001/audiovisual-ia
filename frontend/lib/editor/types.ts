@@ -150,6 +150,21 @@ export interface OverlayStyle {
   tile: boolean;
 }
 
+// Control de velocidad de un clip (espejo de ClipSpeed en model.py). rate>0 (1.0=normal),
+// reverse solo en vídeo. Default neutro: speed=null ⇔ rate=1.0, reverse=false.
+export interface ClipSpeed {
+  rate: number;
+  reverse: boolean;
+}
+
+// Congelación de fotograma de un clip visual (espejo de ClipFreeze en model.py). at_s es
+// el instante del origen que se congela; hold_s la duración de la congelación. Default
+// neutro: freeze=null (sin congelación).
+export interface ClipFreeze {
+  at_s: number;
+  hold_s: number;
+}
+
 export interface EditClip {
   id: string;
   track_id: string;
@@ -184,6 +199,15 @@ export interface EditClip {
 
   // Overlay (imagen/logo/marca de agua). Reutiliza `asset_id`.
   overlay: OverlayStyle | null;
+
+  // Detach de audio (FEAT-005): en un clip de vídeo indica que su pista de audio de origen
+  // no suena (el audio se oye por el clip voice desvinculado). Default neutro (false).
+  mute_source_audio: boolean;
+
+  // Velocidad y congelación (FEAT-006). Defaults neutros (null): un clip previo sin estos
+  // campos se trata igual que antes (el compilador solo los emite si difieren del default).
+  speed: ClipSpeed | null;
+  freeze: ClipFreeze | null;
 }
 
 export interface EditTrack {

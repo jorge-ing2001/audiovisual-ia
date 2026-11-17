@@ -560,6 +560,53 @@ export function copyAttributes(
   });
 }
 
+/**
+ * Desvincula el audio de un clip de vídeo (operación `detach_audio`, FEAT-005).
+ *
+ * Crea un clip de audio equivalente en una pista `voice` (creándola si falta) y marca el
+ * clip de vídeo para no reproducir su audio de origen. Rechaza (422) clips no-vídeo. Si se
+ * indica `targetTrackId`, debe ser una pista `voice` existente.
+ */
+export function detachAudio(
+  projectId: number,
+  clipId: string,
+  targetTrackId?: string,
+): Promise<EditProjectRead> {
+  const params: Record<string, unknown> = { clip_id: clipId };
+  if (targetTrackId) params.target_track_id = targetTrackId;
+  return applyEditOp(projectId, "detach_audio", params);
+}
+
+/**
+ * Fija la velocidad de un clip (operación `set_speed`, FEAT-006).
+ *
+ * `rate > 0` (1.0 = normal; recalcula `duration_s`); `reverse` solo en vídeo (el reverse de
+ * VÍDEO se aplica en export, en preview se muestra un indicador). `rate=1.0` sin `reverse`
+ * vuelve al estado neutro (sin cambios de compilación).
+ */
+export function setClipSpeed(
+  projectId: number,
+  clipId: string,
+  opts: { rate?: number; reverse?: boolean },
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_speed", { clip_id: clipId, ...opts });
+}
+
+/**
+ * Congela un fotograma de un clip de vídeo (operación `set_freeze`, FEAT-006).
+ *
+ * `atS` es el instante del origen a congelar (dentro de su rango) y `holdS` cuánto se
+ * mantiene. `holdS=0` limpia la congelación. Rechaza (422) clips de imagen.
+ */
+export function setClipFreeze(
+  projectId: number,
+  clipId: string,
+  atS: number,
+  holdS: number,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_freeze", { clip_id: clipId, at_s: atS, hold_s: holdS });
+}
+
 /** Deshace la última edición (POST .../editor/undo). 409 si no hay nada que deshacer. */
 export function undoEdit(projectId: number): Promise<EditProjectRead> {
   return request<EditProjectRead>(`/projects/${projectId}/editor/undo`, {

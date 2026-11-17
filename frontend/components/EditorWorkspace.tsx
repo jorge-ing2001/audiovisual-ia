@@ -1758,6 +1758,119 @@ function VisualInspector({
           ))}
         </Select>
       </Field>
+
+      {/* Velocidad / congelar fotograma / desvincular audio (FEAT-006 / FEAT-005). */}
+      <SpeedFreezeControls clip={clip} busy={busy} onOp={onOp} />
+    </div>
+  );
+}
+
+// Controles de velocidad (rate + invertir), congelar fotograma (at_s/hold_s) y, para
+// clips de vídeo, desvincular el audio de origen a una pista voice. Cada control llama a la
+// operación pura correspondiente (set_speed/set_freeze/detach_audio), que versiona y se
+// propaga a preview/export por igual.
+function SpeedFreezeControls({
+  clip,
+  busy,
+  onOp,
+}: {
+  clip: EditClip;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+}) {
+  const rate = clip.speed?.rate ?? 1;
+  const reverse = clip.speed?.reverse ?? false;
+  const freeze = clip.freeze;
+  const isVideo = clip.kind === "video";
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
+      <h4 className="text-xs font-semibold uppercase text-neutral-500">
+        Velocidad y congelación
+      </h4>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={`Velocidad (${rate.toFixed(2)}×)`}>
+          <TextInput
+            type="number"
+            step="0.25"
+            min="0.1"
+            defaultValue={rate}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v > 0 && v !== rate)
+                void onOp("set_speed", { clip_id: clip.id, rate: v });
+            }}
+            disabled={busy}
+          />
+        </Field>
+        {isVideo && (
+          <Field label="Invertir (export)">
+            <Button
+              variant={reverse ? "primary" : "secondary"}
+              loading={busy}
+              onClick={() =>
+                void onOp("set_speed", { clip_id: clip.id, reverse: !reverse })
+              }
+            >
+              {reverse ? "Invertido ✓" : "Invertir"}
+            </Button>
+          </Field>
+        )}
+      </div>
+
+      {isVideo && (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Congelar en (s del origen)">
+            <TextInput
+              type="number"
+              step="0.1"
+              min="0"
+              defaultValue={freeze?.at_s ?? clip.source_in_s}
+              onBlur={(e) => {
+                const atS = Number(e.target.value);
+                const holdS = freeze?.hold_s ?? 1;
+                if (Number.isFinite(atS))
+                  void onOp("set_freeze", {
+                    clip_id: clip.id,
+                    at_s: atS,
+                    hold_s: holdS,
+                  });
+              }}
+              disabled={busy}
+            />
+          </Field>
+          <Field label="Mantener (s); 0 = quitar">
+            <TextInput
+              type="number"
+              step="0.1"
+              min="0"
+              defaultValue={freeze?.hold_s ?? 0}
+              onBlur={(e) => {
+                const holdS = Number(e.target.value);
+                const atS = freeze?.at_s ?? clip.source_in_s;
+                if (Number.isFinite(holdS))
+                  void onOp("set_freeze", {
+                    clip_id: clip.id,
+                    at_s: atS,
+                    hold_s: holdS,
+                  });
+              }}
+              disabled={busy}
+            />
+          </Field>
+        </div>
+      )}
+
+      {isVideo && (
+        <Button
+          variant="secondary"
+          loading={busy}
+          disabled={clip.mute_source_audio}
+          onClick={() => void onOp("detach_audio", { clip_id: clip.id })}
+        >
+          {clip.mute_source_audio ? "Audio desvinculado ✓" : "Desvincular audio"}
+        </Button>
+      )}
     </div>
   );
 }

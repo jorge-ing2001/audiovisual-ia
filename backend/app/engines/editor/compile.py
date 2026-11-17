@@ -68,7 +68,7 @@ def _visual_clip_props(
             return None
         return {"type": t.type, "durationInFrames": _frames_len(t.duration_s, fps)}
 
-    return {
+    props = {
         "id": clip.id,
         "kind": clip.kind,
         "from": _frame_at(clip.start_s, fps),
@@ -82,6 +82,28 @@ def _visual_clip_props(
         "transitionOut": _transition(clip.transition_out),
         "effects": [{"type": e.type, "params": e.params} for e in clip.effects],
     }
+    # Detach de audio (FEAT-005): el clip de vídeo con ``mute_source_audio`` emite
+    # ``muted: true`` para que su <OffthreadVideo> no reproduzca el audio de origen (se oye
+    # por el clip ``voice`` desvinculado). SOLO cuando el flag está activo: un clip sin él
+    # produce EXACTAMENTE el mismo inputProps que el baseline (regresión §5.4).
+    if clip.mute_source_audio:
+        props["muted"] = True
+    # Velocidad (FEAT-006): emite ``speed`` SOLO cuando difiere del default (rate != 1.0 o
+    # reverse). Un clip sin cambios de velocidad produce el mismo inputProps (regresión §5.2).
+    speed = clip.speed
+    if speed is not None and (speed.rate != 1.0 or speed.reverse):
+        props["speed"] = {"rate": round(speed.rate, 6), "reverse": speed.reverse}
+    # Congelar fotograma (FEAT-006): emite ``freeze`` SOLO cuando está definido (§5.3). El
+    # fotograma del origen (``at_s``) y la duración de la congelación se dan en FRAMES.
+    freeze = clip.freeze
+    if freeze is not None:
+        props["freeze"] = {
+            "atFrame": _frame_at(freeze.at_s, fps),
+            "holdInFrames": _frames_len(freeze.hold_s, fps),
+            "atS": round(freeze.at_s, 3),
+            "holdS": round(freeze.hold_s, 3),
+        }
+    return props
 
 
 # Defaults NEUTROS de la decoración fina de texto (TextDecoration). Si TODOS los campos de
@@ -394,11 +416,42 @@ def compile_audio_tracks(
     return tracks
 
 
+def _atempo_chain(rate: float) -> list[str]:
+    """Descompone un ``rate`` en una cadena de ``atempo`` válidos para FFmpeg.
+
+    El filtro ``atempo`` de FFmpeg solo acepta factores dentro de ``[0.5, 2.0]``. Para un
+    ``rate`` fuera de ese rango se encadenan varios ``atempo`` cuyo producto es ``rate``
+    (p. ej. ``rate=4.0`` -> ``atempo=2.0,atempo=2.0``; ``rate=0.25`` ->
+    ``atempo=0.5,atempo=0.5``). Devuelve ``[]`` para ``rate==1.0`` (no cambia el tempo).
+    """
+    if rate <= 0:
+        return []
+    filters: list[str] = []
+    remaining = rate
+    # Acelerar: trocea en factores de 2.0 mientras el resto exceda 2.0.
+    while remaining > 2.0 + 1e-9:
+        filters.append("atempo=2.0")
+        remaining /= 2.0
+    # Ralentizar: trocea en factores de 0.5 mientras el resto quede por debajo de 0.5.
+    while remaining < 0.5 - 1e-9:
+        filters.append("atempo=0.5")
+        remaining /= 0.5
+    if abs(remaining - 1.0) > 1e-9:
+        filters.append(f"atempo={round(remaining, 6)}")
+    return filters
+
+
 def _clip_prep_filters(clip: EditClip) -> list[str]:
-    """Filtros FFmpeg de preparación por clip (recorte + fades), antes de la mezcla.
+    """Filtros FFmpeg de preparación por clip (recorte + velocidad + fades), pre-mezcla.
 
     - ``atrim`` recorta el origen a ``[source_in_s, source_out_s]`` (si hay recorte).
-    - ``afade`` aplica fade-in/out sobre el clip ya recortado.
+    - ``atempo`` ajusta el tempo al ``rate`` del clip (FEAT-006), encadenando factores en
+      ``[0.5, 2.0]`` cuando ``rate`` cae fuera de ese rango. Va DESPUÉS del ``atrim``.
+    - ``areverse`` invierte el audio cuando el clip tiene ``speed.reverse`` (FEAT-006).
+    - ``afade`` aplica fade-in/out sobre el clip ya recortado/ajustado.
+
+    Emisión CONDICIONAL: un clip sin ``speed`` (o con ``rate=1.0`` y ``reverse=False``)
+    produce EXACTAMENTE los mismos filtros que el baseline (regresión §5.2).
     """
     filters: list[str] = []
     if clip.source_in_s > 0 or clip.source_out_s is not None:
@@ -409,6 +462,13 @@ def _clip_prep_filters(clip: EditClip) -> list[str]:
         # Tras recortar hay que reponer la base de tiempo a 0 para que ``adelay`` posicione
         # el clip correctamente en la mezcla.
         filters.append("asetpts=PTS-STARTPTS")
+    # Velocidad: atempo (rate) + areverse (reverse). Tras el atrim, antes de los fades.
+    speed = clip.speed
+    if speed is not None:
+        if speed.rate != 1.0:
+            filters.extend(_atempo_chain(speed.rate))
+        if speed.reverse:
+            filters.append("areverse")
     if clip.fade_in_s > 0:
         filters.append(f"afade=t=in:st=0:d={round(clip.fade_in_s, 3)}")
     if clip.fade_out_s > 0:

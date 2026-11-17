@@ -31,6 +31,8 @@ __all__ = [
     "TitleAnimation",
     "TitleStyle",
     "OverlayStyle",
+    "ClipSpeed",
+    "ClipFreeze",
     "EditMarker",
     "EditClip",
     "EditTrack",
@@ -297,6 +299,58 @@ class OverlayStyle(BaseModel):
         return value
 
 
+class ClipSpeed(BaseModel):
+    """Control de velocidad de un clip (acelerar/ralentizar/invertir).
+
+    - ``rate``: factor de reproducción (``1.0`` = normal; ``>1`` acelera; ``<1``
+      ralentiza). Debe ser ``> 0``. Afecta a clips VISUALES recortables (``video``) y de
+      AUDIO; en ``image`` ``rate`` solo escala la duración en la línea de tiempo (una
+      imagen fija no tiene reproducción) y ``reverse`` no aplica.
+    - ``reverse``: invierte el clip. Solo tiene sentido en vídeo/audio; la operación
+      ``op_set_speed`` lo rechaza en clips no-vídeo. El reverse real del VÍDEO es caro y se
+      resuelve en el camino de export (ver ``docs/EDITOR-ADVANCED.md`` §8).
+
+    Default neutro: ``speed=None`` ⇔ ``rate=1.0, reverse=False`` ⇔ sin cambios de
+    compilación (regresión §3.6).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rate: float = 1.0
+    reverse: bool = False
+
+    @field_validator("rate")
+    @classmethod
+    def _rate_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("speed.rate debe ser > 0")
+        return value
+
+
+class ClipFreeze(BaseModel):
+    """Congela un fotograma del origen de un clip visual durante ``hold_s`` segundos.
+
+    - ``at_s``: instante del ORIGEN (``source``) que se congela (>= 0).
+    - ``hold_s``: cuánto tiempo se mantiene congelado en la línea de tiempo (>= 0).
+
+    Default neutro ``None`` en ``EditClip.freeze`` (sin congelación). Para ``image`` el
+    freeze es redundante y la operación ``op_set_freeze`` lo rechaza. El freeze afecta solo
+    al vídeo (el audio del tramo sigue), ver ``docs/EDITOR-ADVANCED.md`` §5.3.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    at_s: float = 0.0
+    hold_s: float = 0.0
+
+    @field_validator("at_s", "hold_s")
+    @classmethod
+    def _non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("freeze.at_s/hold_s no pueden ser negativos")
+        return value
+
+
 class EditMarker(BaseModel):
     """Marcador de la línea de tiempo (metadato del proyecto, NO afecta al render).
 
@@ -368,6 +422,18 @@ class EditClip(BaseModel):
 
     # Overlay (imagen/logo/marca de agua). Reutiliza ``asset_id`` como imagen.
     overlay: OverlayStyle | None = None
+
+    # Detach de audio (FEAT-005): en un clip VISUAL ``video`` indica que su pista de audio
+    # de origen NO suena (el audio se oye por el clip ``voice`` desvinculado que crea
+    # ``op_detach_audio``). Default neutro ``False``: un clip previo sin el campo valida y
+    # compila IGUAL (el compilador solo emite ``muted`` cuando es ``True``; regresión §5.4).
+    mute_source_audio: bool = False
+
+    # Velocidad y congelación (FEAT-006). Defaults NEUTROS (``None``): un clip previo sin
+    # estos campos valida y compila IGUAL (el compilador solo emite ``speed``/``freeze``
+    # cuando difieren del default; regresión §3.6).
+    speed: "ClipSpeed | None" = None
+    freeze: "ClipFreeze | None" = None
 
     @field_validator("start_s")
     @classmethod

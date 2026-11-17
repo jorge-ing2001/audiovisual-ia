@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "feat",
   "description": "Marcadores + ajuste magnetico (snap). Anade una lista de marcadores (tiempo + etiqueta + color) en EditProject (metadatos, no afectan al render) y operaciones puras para gestionarlos. El snap es UX de frontend: una funcion pura que, al mover/colocar un clip, redondea el tiempo al borde de clip o marcador mas cercano dentro de un umbral; el tiempo YA ajustado se persiste con las operaciones existentes (move/set_timing). Ver docs/EDITOR-ADVANCED.md secciones 3.4, 4.8, 8 (snap).",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "model.py: anadir clase EditMarker(id, t_s>=0, label='', color='#38bdf8') con ConfigDict(extra='forbid') y 'markers: list[EditMarker] = Field(default_factory=list)' en EditProject. Default [] (regresion).",
     "operations.py: anadir op_add_marker({t_s, label?, color?}) (id determinista), op_remove_marker({marker_id}) y op_set_marker({marker_id, t_s?, label?, color?}); registrar en OPERATIONS. Validaciones de rango/tipo con EditOperationError.",
@@ -24,5 +24,5 @@
     "cd remotion && npm run typecheck"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Implementado. model.py: clase EditMarker(id,t_s>=0,label,color) con extra='forbid' + markers: list[EditMarker]=[] en EditProject (default [], REGRESION verificada). operations.py: op_add_marker/op_remove_marker/op_set_marker registradas en OPERATIONS; id determinista marker_<n>; validaciones de rango/tipo con EditOperationError. compile.py NO toca markers (son metadatos; no se emiten a inputProps). Espejo TS: EditMarker + markers[] en frontend/lib/editor/types.ts; remotion/src/types.ts NO cambia (son metadatos). frontend/lib/editor/snap.ts NUEVO: snapTime(t,candidates,thresholdSeconds) puro (candidato mas cercano dentro del umbral o t; empate->menor; nunca negativo) y collectSnapCandidates(project,excludeClipId) (bordes start_s/end_s de clips habilitados + t_s de marcadores + origen 0). lib/api.ts: addMarker/setMarker/removeMarker tipadas. EditorWorkspace.tsx: toggle snap on/off en el header, boton '+ Marcador' (marca el frame actual del Player), marcadores dibujados en una regla sobre el timeline (clic para quitar), snap integrado en el movimiento batch de la barra de seleccion. Tests: backend/tests/editor/test_markers.py (16 tests: add/remove/set + errores + 2 de regresion sin markers = mismo inputProps + legacy sin campo valida). Runner JS: frontend/tests/snap.test.mjs (snapTime/collectSnapCandidates puros). Verificacion EN VERDE: pytest 396 passed/2 skipped (baseline FEAT-002 era 351/2); frontend npm run build/lint/typecheck OK; remotion typecheck OK; npm test 28/28 (incluye 8 drag previos + 20 snap). Smoke manual (navegador) del toggle snap y los marcadores: no automatizable en sandbox, UI conectada a ops reales. REGRESION confirmada: EditProject sin markers produce el mismo inputProps."
 }
