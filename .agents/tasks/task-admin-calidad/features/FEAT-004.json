@@ -2,7 +2,7 @@
   "id": "FEAT-004",
   "type": "feat",
   "description": "Control de Calidad (backend): nuevo paquete engines/qa con mediciones REALES (ffprobe/ffmpeg) y evaluacion PURA de los 5 checks (loudness -14 LUFS, frames negros via blackdetect, coherencia de duracion suma-de-escenas/EditProject vs MP4, resolucion/aspect correctos, subtitulos dentro de la duracion). Cada check tiene UMBRALES EXPLICITOS y CUATRO estados (pass/warn/fail/skipped); un control OMITIDO nunca cuenta como aprobado. El overall se calcula con regla conservadora (fail>warn>skipped>pass; skipped degrada a 'pass_with_skips', nunca 'pass'). El qa_report con TRAZABILIDAD completa (generated_at ISO, asset_id/render_hash, qa_engine_version, thresholds usados, resultados por check con medicion/umbral/skip_reason) se persiste en Asset.meta.qa_report del Asset(kind='video') y se expone por GET /projects/{id}/render/qa aplicando REGLA DE FRESCURA (asociado al render concreto; nunca mostrar un reporte obsoleto como actual).",
-  "status": "pending",
+  "status": "completed",
   "steps": [
     "Crear backend/app/engines/qa/__init__.py (con qa_engine_version), checks.py (EVALUACION PURA + constantes de umbral), measure.py (MEDICION ffprobe/ffmpeg) y report.py (orquesta).",
     "measure.py: reutilizar patrones existentes -> loudness con engines/voice/master.VoiceMaster.measure_integrated/parse_integrated_lufs; duracion y width/height con storage/uploads.probe_media; frames negros con ffmpeg 'blackdetect=d=BLACK_MIN_S:pic_th=...' sobre el MP4 parseando black_start/black_end del stderr (patron de parse_silencedetect en trim.py). Invocar binarios via settings.ffmpeg_bin/ffprobe_bin. Si faltan binarios o no hay MP4/audio, devolver un resultado con skip_reason (ffmpeg_unavailable, no_video, no_audio, ...) en vez de fingir medicion.",
@@ -27,5 +27,5 @@
     "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Nuevo paquete engines/qa: __init__(qa_engine_version=1.0.0, QA_REPORT_SCHEMA=qa_report/v1), checks.py (PURO: 5 checks + load_thresholds con overrides AIV_QA_*, compute_overall fail>warn>skipped>pass con pass_with_skips DISTINTO de pass), measure.py (ffprobe/ffmpeg: measure_probe/loudness/black_frames + parse_blackdetect + measure_render_hash sha256), report.py (build_qa_report con trazabilidad + persist_qa_report en Asset.meta). handlers.py: _run_qa_after_render tras render_handler y edit_export_handler (best-effort, no toca compose). render.py: GET /projects/{id}/render/qa con frescura (404 sin render, no_report si el ultimo asset no tiene reporte, stale si hash difiere). Tests: test_qa_checks.py 35 PURO sin ffmpeg; test_qa_measure.py 10 con MP4 lavfi (negro inicial + tono 220Hz) + endpoint frescura. Resultados reales: pytest tests/test_qa_checks.py = 35 passed; con AIV_FFMPEG/FFPROBE_BIN test_qa_checks+test_qa_measure = 45 passed; suite completa = 583 passed, 3 skipped, 0 failed (baseline 538 passed/3 skipped mantenido, +45 tests nuevos, mismos 3 skips). render_hash = sha256 del MP4 verificado."
 }

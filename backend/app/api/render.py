@@ -76,6 +76,61 @@ def latest_render(project_id: int, session: Session = Depends(get_db)) -> Job:
     return job
 
 
+def _latest_video_asset(session: Session, project_id: int) -> Asset | None:
+    """``Asset(kind='video')`` MÁS RECIENTE del proyecto (el "último render"), o ``None``."""
+    stmt = (
+        select(Asset)
+        .where(Asset.project_id == project_id, Asset.kind == "video")
+        .order_by(Asset.id.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+@router.get("/projects/{project_id}/render/qa")
+def get_render_qa(project_id: int, session: Session = Depends(get_db)) -> dict:
+    """Devuelve el ``qa_report`` del ÚLTIMO render aplicando la REGLA DE FRESCURA (§2.7).
+
+    - 404 si el proyecto no tiene ningún render.
+    - Localiza el ``Asset(kind='video')`` más reciente y devuelve su ``meta.qa_report`` SOLO
+      si ``qa_report.asset_id == asset.id`` (fresco, asociado a ese render concreto).
+    - Si el último render NO tiene ``qa_report``, responde un estado claro
+      (``status='no_report'``) SIN devolver el reporte de un render anterior.
+    - Opcional: si el MP4 existe y su sha256 difiere del ``render_hash`` del reporte, marca
+      ``stale=true`` (el fichero cambió desde que se evaluó).
+    """
+    _get_project_or_404(session, project_id)
+    asset = _latest_video_asset(session, project_id)
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El proyecto no tiene ningún render; dispara POST .../render primero.",
+        )
+
+    meta = asset.meta or {}
+    report = meta.get("qa_report") if isinstance(meta, dict) else None
+
+    # Frescura: el reporte debe ser el de ESTE asset (nunca el de un render anterior).
+    if not isinstance(report, dict) or report.get("asset_id") != asset.id:
+        return {
+            "status": "no_report",
+            "asset_id": asset.id,
+            "detail": "El último render no tiene reporte de calidad asociado.",
+        }
+
+    # Obsolescencia opcional: comparar render_hash con el hash actual del fichero.
+    stale = False
+    path = Path(asset.path)
+    if path.is_file() and report.get("render_hash"):
+        from app.engines.qa.measure import measure_render_hash
+
+        current = measure_render_hash(str(path))
+        if current is not None and current != report.get("render_hash"):
+            stale = True
+
+    return {"status": "ok", "stale": stale, "report": report}
+
+
 @router.get("/projects/{project_id}/video")
 def download_video(project_id: int, session: Session = Depends(get_db)) -> FileResponse:
     """Descarga el MP4 final del proyecto (``Asset(kind='video')`` más reciente)."""
