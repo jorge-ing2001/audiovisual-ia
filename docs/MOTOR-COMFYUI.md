@@ -36,9 +36,17 @@ Decisiones vinculantes del usuario que este diseño respeta:
   provider, `AIV_SD_MAX_CONCURRENCY=1`, ampliable por config) para no saturar los
   4 GB de VRAM. Reutiliza la cola de jobs secuencial existente sin duplicarla.
 - **Memoria verificada.** No se asume que `keep_alive=0` baste: antes de generar
-  con ComfyUI se **verifica** que Ollama liberó el modelo (consulta a `/api/ps` con
-  espera/reintento acotado y log del resultado), y ComfyUI administra su VRAM con
-  `/free`.
+  con ComfyUI se **verifica el estado previo** de los modelos cargados (Ollama vía
+  `/api/ps`; ComfyUI vía `/system_stats`) y se libera solo lo que está realmente
+  cargado. ComfyUI administra su VRAM con `/free`, pero **nunca de forma
+  indiscriminada**: antes se comprueba con `GET /queue` que no haya otros trabajos en
+  curso (no romper generaciones de otros procesos). Los fallos de liberación (Ollama o
+  ComfyUI) se **registran de forma visible** (warning/error con detalle), nunca se
+  ocultan. El provider es **compatible con versiones** de ComfyUI que no soporten algún
+  endpoint esperado (`/free`, `/system_stats`, `/queue`): detecta capacidades al
+  iniciar y degrada con gracia saltando el paso no soportado. Cada imagen conserva en
+  `meta` una identificación del workflow (`workflow_version` + `workflow_hash`
+  determinista) para saber con qué configuración se generó.
 - **Alcance: solo 2D.** Imágenes fijas por escena. No animación (eso es el motor
   3D / Blender o vídeo IA futuro).
 
@@ -49,6 +57,16 @@ Decisiones vinculantes del usuario que este diseño respeta:
 > (5) preparación (solo diseño) para consistencia visual, (6) protección de la
 > arquitectura existente y regresión verde, y (7) ejecución doc-primero. Las
 > secciones §5, §6, §8, §8bis y §9bis materializan estos puntos.
+>
+> **Refinamiento adicional (5 ajustes del usuario).** Sobre lo anterior se
+> incorporan: (A) verificar qué modelos están cargados antes de operar (Ollama
+> `/api/ps`, ComfyUI `/system_stats`), (B) no ejecutar `/free` indiscriminadamente si
+> ComfyUI está ocupado (`GET /queue`), (C) registrar los errores de liberación sin
+> ocultarlos (warning/error con detalle), (D) compatibilidad con versiones de ComfyUI
+> que no soporten algún endpoint (detección de capacidades + fallback por endpoint),
+> y (E) conservar identificación del workflow (`workflow_version`/`workflow_hash`) en
+> los metadatos. Las secciones §5.1, §5.3, §5quater y §8bis.1 materializan estos cinco
+> puntos.
 
 ---
 
@@ -91,9 +109,16 @@ requiere mantener un websocket abierto):
    escribe en el workspace del proyecto.
 4. **(VRAM)** `POST /free` con `{"unload_models": true, "free_memory": true}` para
    descargar los modelos de ComfyUI de la VRAM al terminar (simétrico al unload de
-   Ollama; ver §5).
-5. **(Diagnóstico, opcional)** `GET /system_stats` devuelve versión de Python,
-   dispositivos y VRAM; útil para un futuro check de "ComfyUI vivo".
+   Ollama; ver §5). **Nunca se llama a `/free` de forma indiscriminada:** antes se
+   comprueba con `GET /queue` que ComfyUI no tiene otros trabajos en curso o en cola
+   (§5.3), y el endpoint puede no existir en versiones antiguas (se degrada; §5quater).
+5. **(Capacidades / diagnóstico)** `GET /system_stats` devuelve versión de ComfyUI,
+   versión de Python, dispositivos y VRAM. Se usa **al iniciar el provider** para
+   detectar capacidades/versión y decidir qué endpoints están disponibles (§5quater);
+   también sirve para consultar el estado de memoria/modelos **antes** de operar (§5.3).
+6. **(Estado de la cola)** `GET /queue` devuelve `queue_running` y `queue_pending`
+   (trabajos en ejecución y pendientes). Se consulta como **guarda** antes de `/free`
+   para no romper generaciones de otros procesos/usuarios (§5.3).
 
 > **Websocket (`/ws`) descartado para el MVP.** Da progreso en tiempo real pero
 > añade complejidad (conexión persistente, parseo de eventos binarios). El polling
@@ -270,30 +295,48 @@ puede fallar por OOM. Por eso el unload se **verifica** consultando `/api/ps`
 (endpoint de Ollama que lista los modelos actualmente cargados):
 
 ```text
-OllamaLLM.unload():
-    POST {ollama_url}/api/generate  body = {"model": self.model, "keep_alive": 0}
-    - tolerante: si Ollama no responde (ConnectError/timeout/status!=2xx) ->
-      log.info("Ollama no disponible para unload; no-op") y return (NO lanza).
-
 OllamaLLM.loaded_models() -> list[str]:
     GET {ollama_url}/api/ps -> [m["name"]/m["model"] for m in data["models"]]
     - tolerante: si falla o el endpoint no existe -> [] + log.info.
+
+OllamaLLM.unload():
+    # VERIFICAR ESTADO PREVIO (punto A): consultar /api/ps ANTES de liberar.
+    cargados = self.loaded_models()
+    if self.model not in cargados:
+        log.info("Ollama: el modelo X no está cargado; no hace falta liberar") ; return
+    POST {ollama_url}/api/generate  body = {"model": self.model, "keep_alive": 0}
+    - tolerante: si Ollama no responde (ConnectError/timeout/status!=2xx) -> NO lanza,
+      pero el fallo NO se oculta: log.warning("Fallo al liberar el modelo X de Ollama:
+      <detalle>; se continúa") con nivel warning y detalle del error.
 
 OllamaLLM.verify_unloaded(timeout_s, poll_interval_s) -> bool:
     bucle sondeando /api/ps hasta que self.model ya NO figure cargado:
       - confirmado -> log.info("Ollama liberó el modelo X") y return True
       - expira timeout_s -> log.warning("Ollama no confirmó la descarga de X
         tras Ns; se continúa igualmente") y return False
-    - NUNCA lanza; si /api/ps no existe en esa versión, degrada con log y continúa.
+    - NUNCA lanza; si /api/ps no existe en esa versión, degrada con log.warning
+      ("endpoint /api/ps no soportado: no se pudo verificar") y continúa.
 ```
 
-`unload()` es idempotente y seguro. `verify_unloaded()` **informa y no bloquea**:
-su objetivo es dejar traza honesta (log) de si la VRAM quedó realmente libre, sin
-romper el pipeline si Ollama es de una versión sin `/api/ps`. Mismo patrón que el
-`_ollama_reachable` ya existente en `pipeline.py` (que hace `GET /api/tags`). Se
-testea con httpx mockeado: `/api/ps` que primero lista el modelo y luego no
-(→ `True`), `/api/ps` que sigue listándolo hasta expirar (→ `False` sin lanzar), y
-`/api/ps` caído (→ degrada a `[]`).
+**Verificación de estado previo (punto A del usuario).** `unload()` consulta
+primero `/api/ps`: si el modelo **no** está cargado, no intenta liberar nada (no se
+libera lo que no está cargado) y lo deja registrado. Esto evita trabajo inútil y
+peticiones innecesarias. `unload()` es idempotente y seguro.
+
+**Registro de errores sin ocultarlos (punto C del usuario).** Los fallos de unload
+**no se silencian**: se registran con nivel `warning`/`error` incluyendo el detalle
+(categoría de excepción, URL consultada). La operación es **tolerante** (continúa el
+pipeline), pero el error queda **visible** en el log y, cuando el unload se ejecuta
+desde el pipeline, se refleja además en el `detail`/progreso del `Job`. Nunca se
+usa `log.debug` ni se traga la excepción en silencio.
+
+`verify_unloaded()` **informa y no bloquea**: su objetivo es dejar traza honesta
+(log) de si la VRAM quedó realmente libre, sin romper el pipeline si Ollama es de
+una versión sin `/api/ps`. Mismo patrón que el `_ollama_reachable` ya existente en
+`pipeline.py` (que hace `GET /api/tags`). Se testea con httpx mockeado: `/api/ps`
+que primero lista el modelo y luego no (→ `True`), `/api/ps` que sigue listándolo
+hasta expirar (→ `False` sin lanzar), `/api/ps` caído (→ degrada a `[]`), y el caso
+"modelo no cargado de entrada → `unload()` no hace POST".
 
 ### 5.2 Paso en el pipeline (`jobs/pipeline.py`)
 
@@ -326,8 +369,97 @@ el job.
 Simetría: el `ComfyUIImageProvider` libera su propia VRAM con `POST /free` antes
 (`AIV_SD_FREE_BEFORE`, opcional) y/o después de generar (`AIV_SD_FREE_AFTER=true`),
 de modo que al volver a un siguiente job con guion, Ollama vuelve a tener la VRAM
-libre. Si `/free` no existe en la versión de ComfyUI del usuario, la llamada es
-**tolerante** (log + continuar).
+libre. **Pero `/free` no se ejecuta de forma indiscriminada:** se aplica la guarda
+de `GET /queue` (§5.3) y la detección de capacidades por versión (§5quater). Si
+`/free` no existe en la versión de ComfyUI del usuario, la llamada es **tolerante**
+(se registra con log y se continúa).
+
+---
+
+## 5.3 Estado previo de ComfyUI y guarda de `/free` (puntos A y B del usuario)
+
+Antes de liberar la VRAM de ComfyUI con `POST /free` se aplican **dos comprobaciones**,
+simétricas a la verificación de estado de Ollama en §5.1:
+
+**(A) Verificar el estado previo de memoria/modelos (`GET /system_stats`).** Antes de
+operar, el provider consulta `/system_stats` (si la versión lo soporta; §5quater) para
+conocer el estado de VRAM/dispositivos. Esto se registra en log y permite decidir en
+consecuencia: **no se intenta liberar memoria que no está ocupada** (si los stats
+indican que no hay modelos/VRAM en uso atribuible a ComfyUI, `/free` es un no-op con
+log). Es el equivalente de ComfyUI al `/api/ps` de Ollama: no liberar lo que no está
+cargado.
+
+**(B) No ejecutar `/free` si ComfyUI está ocupado (`GET /queue`).** `POST /free` con
+`unload_models`/`free_memory` afecta a **todo** el servidor ComfyUI, que puede estar
+siendo usado por otros procesos o usuarios. Por eso, antes de `/free`, el provider
+consulta `GET /queue`:
+
+```text
+_comfyui_busy() -> bool:
+    data = GET {url}/queue            # {"queue_running": [...], "queue_pending": [...]}
+    return bool(data["queue_running"]) or bool(data["queue_pending"])
+
+_free_vram(reason):
+    if not capabilities.supports_free:          # §5quater
+        log.info("ComfyUI: /free no soportado por esta versión; se omite") ; return
+    if _comfyui_busy():
+        log.warning("ComfyUI ocupado (trabajos en curso/cola): se OMITE /free para no "
+                     "romper generaciones de otros procesos") ; return
+    try:
+        POST {url}/free {"unload_models": true, "free_memory": true}
+        log.info("ComfyUI: VRAM liberada (%s)", reason)
+    except httpx.HTTPError as exc:
+        # Registro VISIBLE, sin ocultar (punto C): warning con detalle. No se lanza.
+        log.warning("ComfyUI: fallo al liberar VRAM (%s): %s; se continúa", reason, exc)
+```
+
+**Condición de guarda (punto B):** si `GET /queue` indica **cualquier** trabajo en
+`queue_running` o `queue_pending`, **no** se llama a `/free`; se registra y se
+continúa. La propia generación de este provider se serializa con el semáforo de
+§5bis, así que la guarda protege frente a *otros* procesos/usuarios del mismo
+servidor ComfyUI. Si `GET /queue` no existe o falla, se trata como "no se puede
+confirmar que esté libre": se **omite** `/free` de forma conservadora y se registra
+(no romper un trabajo ajeno pesa más que liberar VRAM de forma oportunista).
+
+**Registro de errores de liberación sin ocultarlos (punto C):** todo fallo de `/free`
+(404, `ConnectError`, 5xx, timeout) se registra con nivel `warning`/`error` y detalle;
+nunca se traga en silencio. La operación es tolerante (la generación sigue), pero el
+error queda visible en el log y, si procede, en `meta` del Asset (p. ej.
+`meta.free_vram_error=<detalle>` para el camino de éxito de la imagen).
+
+---
+
+## 5quater. Detección de capacidades / versión de ComfyUI (punto D del usuario)
+
+Distintas versiones de ComfyUI exponen distintos endpoints. El provider **no debe
+romper** porque una versión no soporte `/free`, `/system_stats` o `/queue`. Estrategia:
+
+1. **Al iniciar el provider** (primera operación, con cache perezosa por URL), se
+   consulta `GET /system_stats`. Si responde 2xx, se extrae la versión (`system.comfyui_version`
+   si está presente) y se marca `supports_system_stats=True`. Si devuelve `404`/no
+   soportado o falla por red, `supports_system_stats=False` y se registra con log.
+2. Se construye un **mapa de capacidades** `ComfyUICapabilities` con flags por
+   endpoint: `supports_system_stats`, `supports_queue`, `supports_free`, más
+   `version` (string, o `None` si no se pudo detectar). Cada flag se resuelve de forma
+   perezosa y tolerante (una respuesta `404`/`405`/`ConnectError` del endpoint lo marca
+   como no soportado y se cachea).
+3. **Fallback por endpoint no soportado (degradación con gracia):**
+   - `/system_stats` ausente → no se consulta estado previo ni versión; se continúa con
+     la generación (se asume el flujo básico `/prompt` + `/history` + `/view`).
+   - `/queue` ausente → la guarda de "no liberar si ocupado" no puede confirmar el
+     estado; por seguridad se **omite** `/free` (conservador) y se registra.
+   - `/free` ausente → se **salta** el paso de liberación (no se intenta) y se registra;
+     la generación termina igual.
+4. El flujo **mínimo garantizado** en cualquier versión razonable es `POST /prompt` +
+   `GET /history` + `GET /view`. Todo lo demás (stats, queue, free) es **best-effort**:
+   si falta, se degrada saltando ese paso, nunca se propaga un error al pipeline.
+
+Cada caso "endpoint ausente/404" tiene un test con httpx mockeado (§7): el provider
+continúa, registra el salto y la imagen (o la degradación honesta) se produce igual.
+
+La versión detectada (`version`) y el estado de las capacidades se registran en `meta`
+del Asset generado (p. ej. `meta.comfyui_version`, `meta.capabilities`) para trazar con
+qué servidor se generó.
 
 ---
 
@@ -450,10 +582,26 @@ funcionar de verdad en el PC del usuario y (b) ser **testeable aquí sin ComfyUI
   observada `<= AIV_SD_MAX_CONCURRENCY` (1 por defecto; 2 al reconfigurar), y que
   el lock se libera también tras un fallo.
 - **Unload + verificación de Ollama (§5.1):** `OllamaLLM.unload()` con httpx
-  mockeado verifica el `POST /api/generate` con `keep_alive: 0`; `verify_unloaded()`
-  verifica `GET /api/ps` que deja de listar el modelo (→ `True`), que lo sigue
-  listando hasta expirar (→ `False` sin lanzar) y `/api/ps` caído (→ degrada a
-  `[]`); y el caso "Ollama caído → no-op sin excepción".
+  mockeado verifica el `POST /api/generate` con `keep_alive: 0`; que si `/api/ps`
+  indica que el modelo **no** está cargado, `unload()` **no** hace el POST (estado
+  previo, punto A); que un fallo de unload se registra con `warning` y detalle sin
+  tragarse (punto C); `verify_unloaded()` verifica `GET /api/ps` que deja de listar el
+  modelo (→ `True`), que lo sigue listando hasta expirar (→ `False` sin lanzar) y
+  `/api/ps` caído/404 (→ degrada a `[]`); y el caso "Ollama caído → no-op sin excepción".
+- **Estado previo y guarda de `/free` de ComfyUI (§5.3):** con `GET /queue` que lista
+  trabajos en `queue_running`/`queue_pending`, `/free` **no** se invoca (test mock
+  cuenta `POST /free`); con `/queue` vacío sí se invoca; un fallo de `/free` se registra
+  con `warning` y detalle sin lanzar (punto C). Verificación de estado previo con
+  `/system_stats` registrada.
+- **Compatibilidad por versión / endpoint ausente (§5quater, punto D):** con
+  `/system_stats` → `404` el provider continúa y lo registra; con `/queue` → `404` se
+  omite `/free` de forma conservadora; con `/free` → `404` se salta el paso. En los
+  tres casos la generación (o la degradación honesta) termina igual y **nunca** se
+  propaga un error al pipeline.
+- **Identificación del workflow (§8bis.1, punto E):** `workflow_hash(build_workflow(...))`
+  es determinista (mismo grafo ⇒ mismo hash) e invariante al orden de claves; cambiar
+  `seed`/`steps`/`cfg`/`sampler`/`prompt`/`checkpoint` cambia el hash; el prefijo es
+  `sha256:`. El meta del Asset de éxito incluye `workflow_version` y `workflow_hash`.
 - **Paso del pipeline:** test con el backend de imagen a `sd_local` (provider fake)
   y un spy sobre el unload que confirma que se invoca **una vez** entre guion e
   imágenes; y test con el backend por defecto (`stock`) que confirma que el unload
@@ -521,13 +669,52 @@ no disponibles → `None` (nunca se inventan valores):
   "cfg": 7.0,
   "generation_time_s": 42.7,
   "status": "ok",
-  "fallback_reason": null
+  "fallback_reason": null,
+  "workflow_version": "sd15-embedded-v1",
+  "workflow_hash": "sha256:9f2c...<64 hex>"
 }
 ```
 
 Más claves auxiliares del provider: `backend_engine="comfyui"`, `scheduler`,
 `gen_width`/`gen_height` (resolución **real** de generación SD, por si difiere del
-`width`/`height` objetivo del aspect). En degradación: `provider` del meta queda
+`width`/`height` objetivo del aspect), `comfyui_version` y `capabilities` (§5quater).
+
+### 8bis.1 Identificación del workflow: `workflow_version` y `workflow_hash` (punto E del usuario)
+
+Para saber **con qué configuración se generó cada imagen**, el meta incluye dos claves
+nuevas que identifican el grafo exacto empleado:
+
+- **`workflow_version`** (string): identificador legible de la plantilla de workflow.
+  Vale `"sd15-embedded-v1"` para el grafo embebido por defecto; si el usuario enchufa
+  una plantilla propia (`AIV_SD_WORKFLOW_PATH`), vale `"custom:<nombre-fichero>"` (el
+  `stem` del fichero). Permite reconocer de un vistazo qué familia de workflow se usó.
+
+- **`workflow_hash`** (string): **hash determinista** del grafo final (nodos +
+  parámetros sustituidos) que se envía a `POST /prompt`. Se calcula así:
+
+  ```text
+  workflow_hash(graph: dict) -> str:
+      # Serialización CANÓNICA: JSON con claves ordenadas, sin espacios variables,
+      # UTF-8, para que el mismo grafo produzca SIEMPRE el mismo hash.
+      canonical = json.dumps(graph, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False)
+      return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+  ```
+
+  **Propiedades garantizadas (testeables):** el hash es **determinista** (mismo grafo
+  ⇒ mismo hash, independientemente del orden de inserción de claves) y **sensible a los
+  parámetros** (cambiar `seed`, `steps`, `cfg`, `sampler`, `prompt`, `checkpoint`, el
+  tamaño del latente o la plantilla cambia el hash). El prefijo `sha256:` documenta el
+  algoritmo. Como el grafo ya incorpora todos los parámetros de generación sustituidos
+  (§2.1), el hash identifica de forma única la configuración completa de esa imagen.
+
+`workflow_version` y `workflow_hash` se calculan en `build_generation_meta(...)` a
+partir del grafo que devuelve `build_workflow(...)` (FEAT-002), y se persisten en
+`Asset.meta` por el camino de integración de FEAT-004 (sin migración de esquema). En
+degradación a placeholder se conservan si se llegó a construir el grafo; si no (p. ej.
+`disabled`), quedan en `None`.
+
+En degradación: `provider` del meta queda
 `"sd_local"` como intento, pero el **`Asset.provider`** y `ImageAsset.provider` son
 `"placeholder"`, con `status="fallback"` y `fallback_reason=<categoría>`, de modo
 que queda registrado que se *intentó* SD y por qué se cayó, sin presentar el
