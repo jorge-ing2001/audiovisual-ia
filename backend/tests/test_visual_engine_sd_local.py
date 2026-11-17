@@ -102,8 +102,17 @@ def _failing_http():
     def post(url, body):
         raise httpx.ConnectError("sin red")
 
-    def get(url, params):  # pragma: no cover - no debería alcanzarse
-        raise AssertionError("no debería llegar al history si /prompt falla")
+    def get(url, params):
+        # La gestión de VRAM de FEAT-005 puede consultar /system_stats y /queue en el
+        # camino de error (free_after). Eso es esperable; lo que NO debe ocurrir es
+        # llegar a /history si /prompt falló.
+        if "/history/" in url:  # pragma: no cover - no debería alcanzarse
+            raise AssertionError("no debería llegar al history si /prompt falla")
+        if "/system_stats" in url:
+            raise httpx.ConnectError("sin red")
+        if "/queue" in url:
+            raise httpx.ConnectError("sin red")
+        return _Resp(content=b"")
 
     return _HttpxShim(post, get)
 

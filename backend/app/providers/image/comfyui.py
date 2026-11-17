@@ -30,6 +30,7 @@ import hashlib
 import io
 import json
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -182,6 +183,103 @@ def default_capabilities(version: str | None = None) -> ComfyUICapabilities:
         supports_free=True,
         version=version,
     )
+
+
+def _extract_comfyui_version(data: Any) -> str | None:
+    """Extrae ``system.comfyui_version`` del payload de ``/system_stats`` si existe."""
+    if not isinstance(data, dict):
+        return None
+    system = data.get("system")
+    if isinstance(system, dict):
+        version = system.get("comfyui_version") or system.get("version")
+        if version is not None:
+            return str(version)
+    return None
+
+
+def _has_loaded_models(stats: dict[str, Any]) -> bool:
+    """¿El payload de ``/system_stats`` indica modelos/VRAM en uso por ComfyUI?
+
+    Best-effort (refinamiento 1): ComfyUI no expone un campo canónico y estable de
+    «modelos cargados» en todas las versiones, así que se interpretan las pistas
+    habituales: una lista ``loaded_models`` no vacía, o un dispositivo con
+    ``vram_free < vram_total`` (hay algo ocupando VRAM). Ante la duda (sin campos
+    reconocibles) se devuelve ``True`` para no omitir una liberación necesaria.
+    """
+    loaded = stats.get("loaded_models")
+    if isinstance(loaded, list):
+        return len(loaded) > 0
+
+    devices = stats.get("devices")
+    if isinstance(devices, list) and devices:
+        saw_vram = False
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            total = device.get("vram_total")
+            free = device.get("vram_free")
+            if isinstance(total, (int, float)) and isinstance(free, (int, float)):
+                saw_vram = True
+                if free < total:
+                    return True
+        if saw_vram:
+            # Se pudo leer la VRAM y estaba toda libre -> nada cargado.
+            return False
+
+    # Sin señales reconocibles: conservador (asumir que podría haber algo cargado).
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Concurrencia (punto 1): semáforo a nivel de módulo
+# --------------------------------------------------------------------------- #
+#
+# DECISIÓN (ver docs/MOTOR-COMFYUI.md): el worker actual ya es secuencial (la cola
+# de jobs toma un job a la vez vía ``JobQueue.claim``), así que en el camino normal
+# nunca hay dos generaciones SD a la vez. El semáforo a NIVEL DE MÓDULO NO duplica la
+# cola de jobs: protege el invariante «nunca dos generaciones SD simultáneas» aunque
+# en el futuro haya varios workers/hilos llamando a ``image_for`` en el mismo proceso.
+# El límite lo fija ``AIV_SD_MAX_CONCURRENCY`` (default 1); es reconfigurable e
+# inyectable en test vía :func:`_get_sd_semaphore` / :func:`_reset_sd_semaphore`.
+
+_SD_SEMAPHORE: threading.BoundedSemaphore | None = None
+_SD_SEMAPHORE_VALUE: int | None = None
+_SD_SEMAPHORE_LOCK = threading.Lock()
+
+
+def _get_sd_semaphore() -> threading.BoundedSemaphore:
+    """Devuelve el semáforo (perezoso) que serializa las generaciones SD.
+
+    Se construye con ``get_settings().sd_max_concurrency`` la primera vez. Si el valor
+    de configuración cambia (p. ej. en un test con ``monkeypatch`` del setting) el
+    semáforo se reconstruye para reflejar el nuevo límite. Mínimo efectivo = 1.
+    """
+    global _SD_SEMAPHORE, _SD_SEMAPHORE_VALUE
+    desired = max(int(get_settings().sd_max_concurrency), 1)
+    with _SD_SEMAPHORE_LOCK:
+        if _SD_SEMAPHORE is None or _SD_SEMAPHORE_VALUE != desired:
+            _SD_SEMAPHORE = threading.BoundedSemaphore(value=desired)
+            _SD_SEMAPHORE_VALUE = desired
+        return _SD_SEMAPHORE
+
+
+def _reset_sd_semaphore() -> None:
+    """Descarta el semáforo cacheado (para tests que cambian el límite)."""
+    global _SD_SEMAPHORE, _SD_SEMAPHORE_VALUE
+    with _SD_SEMAPHORE_LOCK:
+        _SD_SEMAPHORE = None
+        _SD_SEMAPHORE_VALUE = None
+
+
+# Caché de capacidades detectadas por URL (una sola detección por servidor).
+_CAPABILITIES_CACHE: dict[str, ComfyUICapabilities] = {}
+_CAPABILITIES_LOCK = threading.Lock()
+
+
+def _reset_capabilities_cache() -> None:
+    """Vacía la caché de capacidades detectadas (para tests)."""
+    with _CAPABILITIES_LOCK:
+        _CAPABILITIES_CACHE.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -596,6 +694,24 @@ class ComfyUIImageProvider:
             )
             return self._degrade(query, aspect, out_dir, seed, reason="disabled")
 
+        # CONCURRENCIA (punto 1): se adquiere el semáforo ANTES de cualquier trabajo de
+        # red y se libera SIEMPRE en el finally (éxito, error y degradación), de modo
+        # que un fallo nunca deja el lock tomado y bloquea generaciones posteriores.
+        semaphore = _get_sd_semaphore()
+        semaphore.acquire()
+        try:
+            return self._image_for_locked(query, aspect, out_dir, seed)
+        finally:
+            semaphore.release()
+
+    def _image_for_locked(
+        self,
+        query: str,
+        aspect: str,
+        out_dir: str,
+        seed: int | None,
+    ) -> ImageAsset:
+        """Cuerpo de :meth:`image_for` ejecutado bajo el semáforo de concurrencia."""
         seed_value = 0 if seed is None else int(seed)
         t0 = time.monotonic()
         width, height = base_size_for_aspect(aspect, self.base_size)
@@ -675,17 +791,17 @@ class ComfyUIImageProvider:
         for attempt in range(attempts):
             try:
                 if self.free_before:
-                    self._free_vram()
+                    self._free_vram(reason="free_before")
                 prompt_id = self._submit(graph)
                 images = self._poll_history(prompt_id)
                 file_path = self._download(images[0], out_dir)
                 if self.free_after:
-                    self._free_vram()
+                    self._free_vram(reason="free_after")
                 return file_path
             except ComfyUIError as exc:
                 last_exc = exc
                 if self.free_after:
-                    self._free_vram()
+                    self._free_vram(reason="free_after_error")
                 if not exc.transient or attempt >= attempts - 1:
                     raise
                 backoff = self.poll_interval_s * (attempt + 1)
@@ -849,21 +965,222 @@ class ComfyUIImageProvider:
         file_path.write_bytes(content)
         return file_path
 
-    def _free_vram(self) -> None:
-        """Libera VRAM con ``POST {url}/free`` de forma tolerante (nunca lanza).
+    # --- detección de capacidades / versión (refinamiento 4, punto D) -------- #
 
-        FEAT-005 añadirá las guardas finas (/queue, /system_stats, compat por
-        versión); aquí es un POST simple y best-effort: cualquier fallo se ignora
-        para no romper el flujo de generación por una liberación opcional.
+    def capabilities(self) -> ComfyUICapabilities:
+        """Capacidades del servidor (perezosas, cacheadas por URL).
+
+        Consulta ``GET {url}/system_stats`` la primera vez para este ``base_url`` y
+        cachea el resultado: qué endpoints soporta (system_stats/queue/free) y la
+        versión (``system.comfyui_version`` si aparece). La detección es tolerante: un
+        404/405 o un ``ConnectError`` marca ``supports_system_stats=False`` (sin asumir
+        que el resto falte; /queue y /free se prueban en el momento de usarlos y cada
+        404 desactiva su flag). El provider NUNCA rompe por falta de un endpoint.
+        """
+        with _CAPABILITIES_LOCK:
+            cached = _CAPABILITIES_CACHE.get(self.base_url)
+            if cached is not None:
+                return cached
+        caps = self._detect_capabilities()
+        with _CAPABILITIES_LOCK:
+            _CAPABILITIES_CACHE.setdefault(self.base_url, caps)
+            return _CAPABILITIES_CACHE[self.base_url]
+
+    def _detect_capabilities(self) -> ComfyUICapabilities:
+        """Detecta capacidades consultando ``GET {url}/system_stats`` (tolerante)."""
+        caps = default_capabilities()
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/system_stats", timeout=self.connect_timeout_s
+            )
+            status = getattr(resp, "status_code", None)
+            if status in (404, 405):
+                caps.supports_system_stats = False
+                logger.info(
+                    "ComfyUI %s: /system_stats no soportado (HTTP %s); se omite la "
+                    "verificación de estado previo.",
+                    self.base_url,
+                    status,
+                )
+                return caps
+            resp.raise_for_status()
+            data = resp.json()
+            caps.supports_system_stats = True
+            caps.version = _extract_comfyui_version(data)
+            logger.info(
+                "ComfyUI %s: versión=%s, capacidades system_stats/queue/free "
+                "(detección por versión).",
+                self.base_url,
+                caps.version,
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as exc:
+            caps.supports_system_stats = False
+            logger.info(
+                "ComfyUI %s: no se pudo detectar capacidades (%s); se continúa de "
+                "forma conservadora.",
+                self.base_url,
+                exc,
+            )
+        except httpx.HTTPError as exc:
+            caps.supports_system_stats = False
+            logger.info(
+                "ComfyUI %s: /system_stats devolvió error (%s); se omite la "
+                "verificación de estado previo.",
+                self.base_url,
+                exc,
+            )
+        return caps
+
+    def _system_stats(self) -> dict[str, Any] | None:
+        """Consulta ``GET {url}/system_stats`` devolviendo el dict o ``None`` (tolerante)."""
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/system_stats", timeout=self.connect_timeout_s
+            )
+            if getattr(resp, "status_code", None) in (404, 405):
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except httpx.HTTPError as exc:
+            logger.info("ComfyUI %s: /system_stats no disponible (%s).", self.base_url, exc)
+            return None
+
+    # --- guarda de cola (refinamiento 2, punto B) ---------------------------- #
+
+    def _comfyui_busy(self) -> bool:
+        """¿ComfyUI tiene trabajos en curso o en cola? (``GET {url}/queue``).
+
+        Devuelve ``True`` si ``queue_running`` o ``queue_pending`` traen elementos.
+        TOLERANTE y CONSERVADOR: si ``/queue`` no existe/falla no se puede confirmar
+        que el servidor esté libre, así que se devuelve ``True`` (no liberar) para no
+        romper generaciones de otros procesos/usuarios. Lo registra.
         """
         try:
-            httpx.post(
+            resp = httpx.get(f"{self.base_url}/queue", timeout=self.connect_timeout_s)
+            if getattr(resp, "status_code", None) in (404, 405):
+                logger.info(
+                    "ComfyUI %s: /queue no soportado; se asume ocupado (conservador).",
+                    self.base_url,
+                )
+                return True
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "ComfyUI %s: no se pudo consultar /queue (%s); se asume ocupado "
+                "(conservador) y no se libera VRAM.",
+                self.base_url,
+                exc,
+            )
+            return True
+
+        if not isinstance(data, dict):
+            return True
+        running = data.get("queue_running") or []
+        pending = data.get("queue_pending") or []
+        busy = bool(running) or bool(pending)
+        if busy:
+            logger.info(
+                "ComfyUI %s: cola ocupada (running=%d, pending=%d).",
+                self.base_url,
+                len(running),
+                len(pending),
+            )
+        return busy
+
+    # --- liberación de VRAM con guardas (refinamientos 1-4) ------------------ #
+
+    def _free_vram(self, reason: str = "manual", meta: dict | None = None) -> None:
+        """Libera VRAM con ``POST {url}/free`` aplicando las cuatro guardas en orden.
+
+        Orden (nunca lanza; cualquier fallo se registra SIN ocultarlo y se continúa):
+
+        1. Si ``not capabilities.supports_free`` -> OMITIR con ``log.info`` (compat por
+           versión, refinamiento 4).
+        2. Verificar estado previo vía ``/system_stats``: si el servidor reporta que no
+           hay nada cargado atribuible a ComfyUI, no se fuerza ``/free`` (refinamiento 1,
+           best-effort con log).
+        3. Si :meth:`_comfyui_busy` -> OMITIR con ``log.warning`` explicando que hay
+           trabajos en curso/cola (refinamiento 2).
+        4. En otro caso, ``POST /free``. Un 500/ConnectError/timeout/404 se registra con
+           ``log.warning``/``log.error`` y el detalle (refinamiento 3) y se refleja
+           opcionalmente en ``meta['free_vram_error']``.
+        """
+        caps = self.capabilities()
+
+        # (1) compatibilidad por versión: el servidor no expone /free.
+        if not caps.supports_free:
+            logger.info(
+                "ComfyUI %s: /free no soportado por esta versión; se omite la "
+                "liberación de VRAM (%s).",
+                self.base_url,
+                reason,
+            )
+            return
+
+        # (2) estado previo: no liberar lo que no está cargado (best-effort).
+        if caps.supports_system_stats:
+            stats = self._system_stats()
+            if stats is not None and not _has_loaded_models(stats):
+                logger.info(
+                    "ComfyUI %s: /system_stats indica que no hay modelos cargados; no "
+                    "se fuerza /free (%s).",
+                    self.base_url,
+                    reason,
+                )
+                return
+
+        # (3) guarda de cola: no liberar si hay trabajos en curso/cola.
+        if self._comfyui_busy():
+            logger.warning(
+                "ComfyUI %s: hay trabajos en curso o en cola; NO se libera VRAM para "
+                "no interrumpir otras generaciones (%s).",
+                self.base_url,
+                reason,
+            )
+            return
+
+        # (4) liberar.
+        try:
+            resp = httpx.post(
                 f"{self.base_url}/free",
                 json={"unload_models": True, "free_memory": True},
                 timeout=self.connect_timeout_s,
             )
-        except httpx.HTTPError as exc:  # best-effort: liberar VRAM no debe romper nada.
-            logger.debug("POST /free falló (tolerado): %s", exc)
+            if getattr(resp, "status_code", None) in (404, 405):
+                caps.supports_free = False
+                logger.warning(
+                    "ComfyUI %s: /free devolvió HTTP %s; se marca como no soportado y "
+                    "se omite en adelante (%s).",
+                    self.base_url,
+                    resp.status_code,
+                    reason,
+                )
+                if meta is not None:
+                    meta["free_vram_error"] = f"http_{resp.status_code}"
+                return
+            resp.raise_for_status()
+            logger.info("ComfyUI %s: VRAM liberada vía /free (%s).", self.base_url, reason)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as exc:
+            logger.warning(
+                "ComfyUI %s: fallo al liberar VRAM vía /free (%s): %s; se continúa sin "
+                "liberar.",
+                self.base_url,
+                reason,
+                exc,
+            )
+            if meta is not None:
+                meta["free_vram_error"] = str(exc)
+        except httpx.HTTPError as exc:
+            logger.error(
+                "ComfyUI %s: /free devolvió error (%s): %s; se continúa sin liberar.",
+                self.base_url,
+                reason,
+                exc,
+            )
+            if meta is not None:
+                meta["free_vram_error"] = str(exc)
 
     # --- degradación honesta ------------------------------------------------- #
 
