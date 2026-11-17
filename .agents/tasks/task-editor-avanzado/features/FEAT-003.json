@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Marcadores + ajuste magnetico (snap). Anade una lista de marcadores (tiempo + etiqueta + color) en EditProject (metadatos, no afectan al render) y operaciones puras para gestionarlos. El snap es UX de frontend: una funcion pura que, al mover/colocar un clip, redondea el tiempo al borde de clip o marcador mas cercano dentro de un umbral; el tiempo YA ajustado se persiste con las operaciones existentes (move/set_timing). Ver docs/EDITOR-ADVANCED.md secciones 3.4, 4.8, 8 (snap).",
+  "status": "pending",
+  "steps": [
+    "model.py: anadir clase EditMarker(id, t_s>=0, label='', color='#38bdf8') con ConfigDict(extra='forbid') y 'markers: list[EditMarker] = Field(default_factory=list)' en EditProject. Default [] (regresion).",
+    "operations.py: anadir op_add_marker({t_s, label?, color?}) (id determinista), op_remove_marker({marker_id}) y op_set_marker({marker_id, t_s?, label?, color?}); registrar en OPERATIONS. Validaciones de rango/tipo con EditOperationError.",
+    "Espejos TS: anadir EditMarker y markers[] a frontend/lib/editor/types.ts (y remotion/src/types.ts solo si el render los necesitara; NO los necesita, son metadatos).",
+    "frontend/lib/editor/snap.ts (nuevo): funcion pura snapTime(t, candidates, thresholdSeconds) -> tiempo ajustado; helper collectSnapCandidates(editProject, excludeClipId) que reune bordes de clips (start_s y end_s) + t_s de marcadores. Documentar opcion de redondeo.",
+    "EditorWorkspace.tsx: integrar snap en el drag de posicion temporal de clips (al soltar, pasar el tiempo ya ajustado a op move/set_timing). Dibujar los marcadores en la regla/timeline y permitir anadir/editar/eliminar marcador (llamando a las ops). Toggle de snap on/off.",
+    "lib/api.ts: funciones tipadas para add/remove/set marker si se usan via /op.",
+    "Tests: backend/tests/editor/ para op_add/remove/set_marker (incl. errores). Si hay runner JS disponible, test unitario de snapTime/collectSnapCandidates; si no, smoke manual documentado en findings. Test de regresion: EditProject sin markers valida y compila igual."
+  ],
+  "acceptance_criteria": [
+    "op_add_marker/op_remove_marker/op_set_marker gestionan markers[] y quedan registradas en OPERATIONS; casos invalidos lanzan EditOperationError (422).",
+    "markers no aparecen en el inputProps del render (son metadatos); un EditProject sin markers produce el mismo inputProps que el baseline.",
+    "snapTime es una funcion pura que devuelve el candidato mas cercano dentro del umbral o el tiempo original si no hay ninguno; collectSnapCandidates incluye bordes de clip y marcadores.",
+    "frontend build/lint/typecheck y remotion typecheck pasan; pytest backend sin fallos."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

@@ -1,0 +1,16 @@
+{
+  "task_id": "task-editor-avanzado",
+  "task_description": "Bloque 1 del roadmap del editor (Editor Avanzado): propiedades de pista (lock/hide/mute) + ripple delete, marcadores + snap, seleccion multiple + copiar/pegar atributos, desvincular audio/video (detach), control de velocidad + congelar fotograma, importar medios por drag&drop (subida generalizada a audio/video/imagen + crear clip), y varias secuencias por proyecto. Todo REAL con paridad preview/export sobre el modelo multipista EditProject, manteniendo los TRES espejos de tipos TS, los DOS espejos de EditComposition y la invariante de regresion (un EditProject previo produce el mismo inputProps/render). Sin migraciones; sin tocar el pipeline de generacion ni la via de pago conmutable. SOLO PLAN: no implementar hasta aprobacion del usuario.",
+  "status": "pending",
+  "feature_order": [
+    "FEAT-001",
+    "FEAT-002",
+    "FEAT-003",
+    "FEAT-004",
+    "FEAT-005",
+    "FEAT-006",
+    "FEAT-007",
+    "FEAT-008"
+  ],
+  "blocked_reason": null
+}

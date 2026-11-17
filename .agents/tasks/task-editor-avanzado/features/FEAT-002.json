@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Propiedades de pista (bloquear/ocultar/silenciar) + edicion ripple. Anade EditTrack.hidden al modelo (muted/locked ya existen) y da uso real a los tres flags: locked protege la edicion (las operaciones que mutan clips rechazan pistas bloqueadas), hidden oculta pistas VISUALES en preview y export, muted sigue silenciando audio. Anade ripple delete (cerrar huecos al eliminar) como operacion pura por pista. Mantiene la invariante de regresion con defaults neutros y emision condicional. Ver docs/EDITOR-ADVANCED.md secciones 3.1, 4.1, 4.2, 5.1.",
+  "status": "pending",
+  "steps": [
+    "model.py: anadir 'hidden: bool = False' a EditTrack (junto a muted/locked). Documentar en docstrings la semantica: muted=audio, hidden=visual, locked=proteccion de edicion.",
+    "operations.py: anadir op_set_track_flags(track_id, {locked?, hidden?, muted?}) que fija una o varias banderas de la pista; registrar en OPERATIONS.",
+    "operations.py: anadir op_ripple_delete(clip_id) que elimina el clip y desplaza a la izquierda los clips posteriores de LA MISMA pista por la duracion del hueco; registrar en OPERATIONS. Rechaza si la pista esta locked.",
+    "operations.py: en las operaciones que mutan clips (trim/split/merge/delete/duplicate/move/set_duration/set_clip_gain/set_fade/set_transform/... y las nuevas batch de FEAT-004) anadir guarda que lanza EditOperationError si la pista del clip esta locked. Centralizar la comprobacion en un helper (p. ej. _require_unlocked(track)).",
+    "compile.py: en compile_remotion_props omitir clips de pistas VISUALES (video/image/title/overlay/subtitle) con track.hidden=True; mantener el filtro por track.muted para audio. No emitir nada nuevo cuando hidden=False (regresion).",
+    "Espejos TS: anadir 'hidden: boolean' a EditTrack en frontend/lib/editor/types.ts y replicar la logica de omision por hidden en frontend/lib/editor/compose.ts (compileEditInputProps). remotion/src/types.ts si procede.",
+    "EditorWorkspace.tsx + lib/api.ts: controles por pista (candado/ojo/altavoz) que llaman a op set_track_flags; la pista hidden se sigue mostrando en el timeline pero marcada; indicar visualmente locked. Nuevas funciones tipadas en api.ts si hacen falta.",
+    "Tests: backend/tests/editor/ casos de op_set_track_flags, op_ripple_delete (cierra hueco, no toca otras pistas, rechaza locked), guarda de locked en operaciones existentes, y compile omite pistas hidden. Test de regresion: EditProject sin hidden produce el mismo inputProps que antes."
+  ],
+  "acceptance_criteria": [
+    "op_set_track_flags fija locked/hidden/muted y queda registrada en OPERATIONS; aplicar una operacion mutadora sobre un clip de pista locked devuelve 422 (EditOperationError).",
+    "op_ripple_delete elimina el clip y reposiciona los posteriores de su pista sin dejar hueco, sin afectar a otras pistas.",
+    "compile_remotion_props no emite clips de una pista VISUAL con hidden=True; con hidden=False el inputProps es identico al del baseline (test de regresion verde).",
+    "Los TRES espejos (types backend/front, compose.ts) y, si aplica, remotion/src/types.ts quedan en paridad; frontend build/lint/typecheck y remotion typecheck pasan.",
+    "pytest backend sin fallos y sin regresion del conteo baseline."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

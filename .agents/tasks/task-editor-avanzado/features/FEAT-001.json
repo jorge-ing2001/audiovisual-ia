@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Configuracion de entorno y baseline verde para el Bloque 1. Confirmar que la suite existente pasa (baseline esperado en main: 322 passed / 2 skipped con ffmpeg) y que frontend/remotion compilan (build/lint/typecheck) ANTES de ampliar nada. No implementa funciones del Bloque 1; deja el entorno listo y el baseline documentado. Primer feature obligatorio (proyecto existente).",
+  "status": "pending",
+  "steps": [
+    "Si no existe backend/.venv, crearlo: cd backend && python -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]' && pip install -e '.[voice]'. (En este sandbox suele existir ya con las deps.)",
+    "Ejecutar la suite backend con ffmpeg: cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q. Registrar el conteo exacto (esperado alrededor de 322 passed / 2 skipped).",
+    "Frontend: cd frontend && npm install ; confirmar npm run build && npm run lint && npm run typecheck.",
+    "Remotion: cd remotion && npm install && npm run typecheck.",
+    "Anotar en findings: conteo de pytest, versiones (python/node/ffmpeg) y estado de build/lint/typecheck de frontend y remotion."
+  ],
+  "acceptance_criteria": [
+    "pytest en backend/ termina con 0 failed (solo passed + skipped) con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN apuntando a /projects/sandbox/.localbin.",
+    "frontend: npm run build, npm run lint y npm run typecheck terminan con exito.",
+    "remotion: npm run typecheck termina con exito.",
+    "El conteo de baseline queda anotado en findings (referencia para detectar regresiones en las features siguientes)."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run build && npm run lint && npm run typecheck",
+    "cd remotion && npm run typecheck"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
