@@ -141,6 +141,12 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./audiovisual.db"
     media_root: str = "./media"
 
+    # --- Administración de proyectos (Bloque 4 / FEAT-002) ---
+    # Umbral de assets a partir del cual la duplicación se ejecuta vía Job con seguimiento
+    # de estado (progress) en vez de síncrona. 0 = siempre vía job; muy alto = siempre
+    # síncrona. El default cubre proyectos pequeños de forma síncrona.
+    duplicate_job_asset_threshold: int = 25
+
 
 _settings: Settings | None = None
 

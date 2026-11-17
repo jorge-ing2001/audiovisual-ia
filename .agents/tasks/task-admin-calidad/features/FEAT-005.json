@@ -1,0 +1,23 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Control de Calidad (UI en el panel de render): bloque 'Control de calidad' en RenderPanel.tsx que muestra el QA report del ultimo render (lista de checks con icono por estado, label y detalle) y un badge global (overall), consumiendo GET /projects/{id}/render/qa. Llamada real; sin datos simulados.",
+  "status": "completed",
+  "steps": [
+    "frontend/lib/api.ts: anadir tipos QACheck { id, label, status: 'pass'|'warn'|'fail', detail, measured? } y QAReport { project_id, asset_id, overall, checks, generated_at, ... } y helper fetchRenderQA(projectId) (GET /projects/{id}/render/qa) con manejo de 404 (sin reporte todavia).",
+    "frontend/components/RenderPanel.tsx: cuando hay un render con exito (lastDone), cargar el QA report y renderizar bajo el video un Card 'Control de calidad' con StatusBadge global (mapear overall a tono: pass=verde, warn=amarillo, fail=rojo) y una lista de checks (icono/estado + label + detail). Reutilizar Card/StatusBadge/ErrorBanner de components/ui.tsx. Si no hay reporte (404), mostrar aviso neutro, no error.",
+    "Refrescar el QA report cuando el job de render pasa a succeeded (mismo efecto que fija lastDone).",
+    "Verificar build/lint/typecheck del frontend."
+  ],
+  "acceptance_criteria": [
+    "Tras un render con exito, RenderPanel muestra el QA report real (checks con estado+detalle y badge overall) obtenido de GET /projects/{id}/render/qa.",
+    "Si el render no tiene reporte (404), la UI lo indica sin romper ni mostrar datos inventados.",
+    "npm run build, npm run lint y el typecheck del frontend terminan sin errores."
+  ],
+  "verification": [
+    "cd frontend && npm run build",
+    "cd frontend && npm run lint"
+  ],
+  "blocked_reason": null,
+  "findings": "fetchRenderQA traduce 404 a null (sin render = aviso neutro) y propaga el resto. El backend (FEAT-004) ya devuelve {status:'ok',stale,report} o {status:'no_report',...}; el tipo RenderQAResult refleja ambos. overall='pass_with_skips' se pinta con tono 'progress' (azul) y texto 'Aprobado con omisiones', DISTINTO de pass (verde 'Aprobado'). Los checks skipped muestran su skip_reason. El Card se refresca via loadQA al pasar el job a succeeded. Verificado: npx tsc --noEmit OK, npm run lint OK (sin warnings), npm run build OK."
+}

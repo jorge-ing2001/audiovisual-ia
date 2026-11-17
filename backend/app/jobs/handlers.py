@@ -16,8 +16,33 @@ from __future__ import annotations
 from app.engines.render import RenderEngine, RenderUnavailable
 from app.jobs.pipeline import generate_video_handler
 from app.jobs.worker import register_handler
-from app.models.entities import Project
+from app.models.entities import Asset, Job, Project
 from app.storage.db import session_scope
+
+
+def _run_qa_after_render(session, project: Project, asset_id: int | None) -> str | None:
+    """Ejecuta el QA report sobre el ``Asset(kind='video')`` y lo persiste en su ``meta``.
+
+    Paso POSTERIOR al render (no toca ``compose``/``compose_edit``): mide el MP4 y evalúa.
+    Si el asset no existe o la medición falla, el reporte queda con los checks afectados en
+    ``skipped`` (nunca se inventa medición). Devuelve el ``overall`` para el result del job,
+    o ``None`` si no hubo asset de vídeo. Nunca propaga: el QA no debe tumbar un render OK.
+    """
+    if asset_id is None:
+        return None
+    try:
+        from app.engines.qa.report import build_qa_report, persist_qa_report
+
+        video_asset = session.get(Asset, int(asset_id))
+        if video_asset is None or video_asset.kind != "video":
+            return None
+        report = build_qa_report(project, video_asset, session)
+        persist_qa_report(video_asset, report)
+        session.commit()
+        return report.get("overall")
+    except Exception:  # noqa: BLE001 - el QA es best-effort posterior al render
+        session.rollback()
+        return None
 
 
 def render_handler(payload: dict | None, job_id: int) -> dict:
@@ -41,12 +66,17 @@ def render_handler(payload: dict | None, job_id: int) -> dict:
             # No se puede renderizar aquí: se expone como error del job (no se simula).
             raise RenderUnavailable(str(exc)) from exc
 
+        # Paso POSTERIOR al render: QA report sobre el MP4 recién producido (no altera la
+        # composición). Si el QA no se puede medir, deja los checks 'skipped' con razón.
+        qa_overall = _run_qa_after_render(session, project, result.asset_id)
+
         return {
             "project_id": int(project_id),
             "asset_id": result.asset_id,
             "video_path": result.video_path,
             "timeline_path": result.timeline_path,
             "duration_s": result.meta.get("duration_s"),
+            "qa_overall": qa_overall,
         }
 
 
@@ -85,6 +115,9 @@ def edit_export_handler(payload: dict | None, job_id: int) -> dict:
         except RenderUnavailable as exc:
             raise RenderUnavailable(str(exc)) from exc
 
+        # Paso POSTERIOR al export: QA report sobre el MP4 del editor (igual que render).
+        qa_overall = _run_qa_after_render(session, project, result.asset_id)
+
         return {
             "project_id": int(project_id),
             "asset_id": result.asset_id,
@@ -92,7 +125,47 @@ def edit_export_handler(payload: dict | None, job_id: int) -> dict:
             "timeline_path": result.timeline_path,
             "duration_s": result.meta.get("duration_s"),
             "source": "edit_export",
+            "qa_overall": qa_overall,
         }
+
+
+def duplicate_project_handler(payload: dict | None, job_id: int) -> dict:
+    """Duplica un proyecto grande con seguimiento de estado (Bloque 4, FEAT-002).
+
+    ``payload`` trae ``project_id`` (origen) y ``new_name`` opcional. Carga el proyecto y
+    ejecuta ``duplicate_project`` con un callback que actualiza ``Job.progress`` conforme
+    copia ficheros (fracción sobre el total de ``path_map``). Al terminar bien, el worker
+    marca el job ``succeeded`` con ``result={'project_id': new_id}``. Ante fallo,
+    ``run_duplication_plan`` ya hace rollback de BD + limpieza del workspace parcial y la
+    excepción se propaga para que el worker marque el job ``failed`` con el mensaje.
+    """
+    from app.engines.admin.duplicate import duplicate_project
+
+    project_id = (payload or {}).get("project_id")
+    if project_id is None:
+        raise ValueError("El job duplicate_project requiere 'project_id' en el payload.")
+    new_name = (payload or {}).get("new_name")
+
+    with session_scope() as session:
+        project = session.get(Project, int(project_id))
+        if project is None:
+            raise ValueError(f"Proyecto {project_id} no encontrado para la duplicación.")
+
+        # El progreso se anota en la MISMA sesión (SQLite usa una sola conexión escritora:
+        # una segunda transacción mientras la duplicación tiene writes pendientes provocaría
+        # 'database is locked'). El flush avanza el progreso dentro de la transacción; se
+        # hace durable en el commit único de la duplicación.
+        job = session.get(Job, job_id)
+
+        def _set_progress(fraction: float) -> None:
+            if job is not None:
+                job.progress = max(0.0, min(1.0, fraction))
+                session.flush()
+
+        new_id = duplicate_project(
+            session, project, new_name=new_name, progress_cb=_set_progress
+        )
+        return {"project_id": new_id}
 
 
 register_handler("render", render_handler)
@@ -100,3 +173,5 @@ register_handler("render", render_handler)
 register_handler("generate_video", generate_video_handler)
 # Export del editor multipista: re-render desde el EditProject (editor, FEAT-002).
 register_handler("edit_export", edit_export_handler)
+# Duplicación de proyectos grandes con seguimiento de estado (Bloque 4, FEAT-002).
+register_handler("duplicate_project", duplicate_project_handler)

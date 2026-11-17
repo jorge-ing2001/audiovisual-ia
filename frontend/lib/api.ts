@@ -35,6 +35,9 @@ export interface Project {
   resolution: string;
   status: string;
   provider_overrides: Record<string, unknown> | null;
+  // Administración (FEAT-002/003). `folder` agrupa proyectos; `tags` siempre es lista.
+  folder: string | null;
+  tags: string[];
   created_at: string;
 }
 
@@ -45,6 +48,8 @@ export interface ProjectCreate {
   aspect_ratio?: string;
   resolution?: string;
   provider_overrides?: Record<string, unknown> | null;
+  folder?: string | null;
+  tags?: string[];
 }
 
 export interface ProjectUpdate {
@@ -55,6 +60,16 @@ export interface ProjectUpdate {
   resolution?: string;
   status?: string;
   provider_overrides?: Record<string, unknown> | null;
+  // Administración (FEAT-002/003): mover de carpeta y editar etiquetas.
+  folder?: string | null;
+  tags?: string[];
+}
+
+/** Filtros opcionales de `GET /projects` (q + tag + folder). */
+export interface ProjectListFilters {
+  q?: string;
+  tag?: string;
+  folder?: string;
 }
 
 export interface Scene {
@@ -226,8 +241,28 @@ export function fetchImageBackends(): Promise<ImageBackendsSettings> {
 // Proyectos (/projects)
 // --------------------------------------------------------------------------- //
 
-export function listProjects(): Promise<Project[]> {
-  return request<Project[]>("/projects");
+/**
+ * Lista proyectos con filtros OPCIONALES (`q`/`tag`/`folder`) que se envían como query
+ * params a `GET /projects`. Sin filtros devuelve todos (compatibilidad). El backend aplica
+ * `q` como substring sobre name/prompt, `tag` como pertenencia y `folder` como igualdad.
+ */
+export function listProjects(filters: ProjectListFilters = {}): Promise<Project[]> {
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.tag) params.set("tag", filters.tag);
+  if (filters.folder) params.set("folder", filters.folder);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return request<Project[]>(`/projects${query}`);
+}
+
+/** Lista de tags distintos existentes (`GET /projects/tags`), para poblar filtros. */
+export function listTags(): Promise<string[]> {
+  return request<string[]>("/projects/tags");
+}
+
+/** Lista de carpetas distintas existentes (`GET /projects/folders`), para poblar filtros. */
+export function listFolders(): Promise<string[]> {
+  return request<string[]>("/projects/folders");
 }
 
 export function getProject(projectId: number): Promise<Project> {
@@ -250,6 +285,42 @@ export function updateProject(projectId: number, body: ProjectUpdate): Promise<P
 
 export function deleteProject(projectId: number): Promise<void> {
   return request<void>(`/projects/${projectId}`, { method: "DELETE" });
+}
+
+/** Cuerpo opcional de `duplicateProject` (nombre del proyecto duplicado). */
+export interface ProjectDuplicateRequest {
+  name?: string;
+}
+
+/**
+ * Resultado de `POST /projects/{id}/duplicate`: el backend responde con el `Project`
+ * duplicado (modo síncrono, proyectos pequeños) o con un `Job` de seguimiento (modo cola,
+ * proyectos grandes). Se discrimina con `isJob` mirando el campo `type` del Job.
+ */
+export type DuplicateResult = Project | Job;
+
+/** Type guard: distingue un `Job` de un `Project` en la respuesta de duplicación. */
+export function isJob(result: DuplicateResult): result is Job {
+  return (
+    typeof (result as Job).type === "string" &&
+    typeof (result as Job).status === "string" &&
+    "progress" in result
+  );
+}
+
+/**
+ * Duplica un proyecto (copia profunda con identidades nuevas). Devuelve el `Project`
+ * nuevo (síncrono) o un `Job` para polling (proyectos grandes). El llamante usa `isJob`
+ * para decidir si debe sondear el job con `useJobPolling` antes de refrescar.
+ */
+export function duplicateProject(
+  projectId: number,
+  body: ProjectDuplicateRequest = {},
+): Promise<DuplicateResult> {
+  return request<DuplicateResult>(`/projects/${projectId}/duplicate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 // --------------------------------------------------------------------------- //
@@ -474,6 +545,78 @@ export function latestRender(projectId: number): Promise<Job> {
 /** URL de descarga directa del MP4 final del proyecto. */
 export function videoDownloadUrl(projectId: number): string {
   return `${API_BASE_URL}/projects/${projectId}/video`;
+}
+
+// --------------------------------------------------------------------------- //
+// Control de calidad del render (/projects/{id}/render/qa) — FEAT-004/005
+// --------------------------------------------------------------------------- //
+
+/** Estado de un check individual del QA report (espejo de engines/qa/checks.py §2.1). */
+export type QACheckStatus = "pass" | "warn" | "fail" | "skipped";
+
+/**
+ * Veredicto global del reporte (espejo de `compute_overall`, §2.3).
+ *
+ * `pass_with_skips` es DISTINTO de `pass`: significa "lo evaluado pasó, pero el reporte
+ * está incompleto" (algún check quedó `skipped`). La UI lo muestra con etiqueta/tono
+ * propios, nunca igual que `pass`.
+ */
+export type QAOverall = "pass" | "warn" | "fail" | "pass_with_skips";
+
+/** Un control del QA report (shape de `engines/qa/checks.py::_check`). */
+export interface QACheck {
+  id: string;
+  label: string;
+  status: QACheckStatus;
+  detail: string;
+  measured?: unknown;
+  threshold?: Record<string, unknown>;
+  /** Razón cuando `status === "skipped"` (p. ej. `ffmpeg_unavailable`, `no_subtitles`). */
+  skip_reason?: string;
+}
+
+/** Reporte de calidad del render (espejo de `engines/qa/report.py::build_qa_report`). */
+export interface QAReport {
+  schema?: string;
+  qa_engine_version?: string;
+  project_id: number;
+  asset_id: number;
+  video_path?: string | null;
+  render_hash?: string | null;
+  generated_at: string;
+  overall: QAOverall;
+  thresholds?: Record<string, unknown>;
+  checks: QACheck[];
+  skipped_checks?: Array<{ id: string; skip_reason?: string | null }>;
+}
+
+/**
+ * Resultado de `GET /projects/{id}/render/qa` (espejo de `render.py::get_render_qa`).
+ *
+ * El backend aplica la REGLA DE FRESCURA (§2.7): puede devolver el `report` asociado al
+ * último render (`status: "ok"`, con `stale` indicando si el MP4 cambió desde la
+ * evaluación), o `status: "no_report"` cuando el último render no tiene reporte asociado.
+ * El 404 (proyecto sin ningún render) lo traduce `fetchRenderQA` a `null`.
+ */
+export type RenderQAResult =
+  | { status: "ok"; stale: boolean; report: QAReport }
+  | { status: "no_report"; asset_id: number; detail: string };
+
+/**
+ * Carga el QA report del último render (GET /projects/{id}/render/qa).
+ *
+ * Devuelve `null` cuando el proyecto todavía no tiene ningún render (404): "sin reporte"
+ * es un estado neutro de la UI, no un error. El resto de códigos se propaga como
+ * `ApiError`. Cuando hay render pero sin reporte fresco, el backend responde
+ * `{ status: "no_report", ... }` (que la UI muestra como aviso neutro).
+ */
+export async function fetchRenderQA(projectId: number): Promise<RenderQAResult | null> {
+  try {
+    return await request<RenderQAResult>(`/projects/${projectId}/render/qa`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 // --------------------------------------------------------------------------- //

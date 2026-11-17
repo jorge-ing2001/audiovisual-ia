@@ -1,0 +1,7 @@
+{
+  "task_id": "task-admin-calidad",
+  "task_description": "Bloque 4 del roadmap: Administracion de proyectos (duplicar con copia de media, renombrar, tags/carpetas + busqueda/filtrado, borrar con limpieza de workspace) y Control de Calidad (QA report real por render via ffprobe/ffmpeg, expuesto por API y mostrado en el panel de render) + edicion inteligente honesta (auto-corte por silencios + sugerencias deterministas). Monousuario local; NO login/multiusuario/suscripcion (Fase 4). No romper vria de pago ni regresion de Bloques 0/1/2/3 (baseline 527 passed / 3 skipped con ffmpeg).",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006"],
+  "blocked_reason": null
+}

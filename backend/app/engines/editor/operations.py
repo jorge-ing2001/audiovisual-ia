@@ -91,6 +91,7 @@ __all__ = [
     "op_set_speed",
     "op_set_freeze",
     "op_add_media_clip",
+    "op_auto_trim_silence",
 ]
 
 #: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
@@ -1892,6 +1893,149 @@ def op_set_freeze(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Auto-corte por silencios (reversible, no destructivo) — FEAT-006 (§3.1)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_silences(params: dict) -> list[tuple[float, float]]:
+    """Normaliza ``params['silences']`` a pares ``(start, end)`` en el eje del ORIGEN.
+
+    Cada elemento puede ser ``[start, end]``/``(start, end)`` o ``{"start": .., "end": ..}``
+    con tiempos en segundos (relativos al origen del audio del clip, mismo eje que
+    ``silencedetect``). Son los tramos de silencio detectados (por ffmpeg en el router o
+    pasados directamente en tests). Lanza ``EditOperationError`` si el shape no es válido.
+    """
+    raw = params.get("silences")
+    if raw is None or not isinstance(raw, (list, tuple)):
+        raise EditOperationError(
+            "auto_trim_silence: 'silences' (lista de pares [start, end]) es obligatorio."
+        )
+    silences: list[tuple[float, float]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            start = item.get("start")
+            end = item.get("end")
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            start, end = item
+        else:
+            raise EditOperationError(
+                "auto_trim_silence: cada silencio debe ser [start, end] o {start,end}."
+            )
+        if isinstance(start, bool) or isinstance(end, bool):
+            raise EditOperationError("auto_trim_silence: start/end deben ser números.")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            raise EditOperationError("auto_trim_silence: start/end deben ser números.")
+        if end < start:
+            raise EditOperationError("auto_trim_silence: un silencio con end < start.")
+        silences.append((float(start), float(end)))
+    return silences
+
+
+def op_auto_trim_silence(edit_project: EditProject, params: dict) -> EditProject:
+    """Recorta los silencios de un clip de VOZ y re-mapea los subtítulos asociados.
+
+    Expone el recorte por silencios de ``engines/voice/trim.py`` como operación PUNTUAL
+    del editor, **reversible y no destructiva** (§3.1): devuelve un ``EditProject`` nuevo
+    (el router lo persiste con ``save_edit_project`` creando una ``Version``, de modo que
+    ``store.undo`` restaura el clip y los cues originales).
+
+    Params:
+      - ``clip_id`` (str): clip de voz a recortar (pista ``voice``; su pista no puede estar
+        bloqueada).
+      - ``silences`` (lista de pares ``[start, end]``): tramos de silencio en el eje del
+        ORIGEN del audio (relativos a ``source_in_s``), tal como los devuelve
+        ``silencedetect``. En el router los calcula ffmpeg; en tests se pasan directos
+        (lógica pura sin ffmpeg).
+      - ``pad`` (float, opcional): margen pre/post que se conserva alrededor del habla
+        (default ``DEFAULT_PAD`` de ``trim.py``).
+
+    Mecánica (pura): construye los tramos de habla con
+    ``SilenceTrimmer.speech_segments(silences, span, pad)`` sobre el rango recortable del
+    clip (``source_out_s - source_in_s``), recalcula la ``duration_s`` del clip como la
+    suma de los tramos de habla y re-mapea, con ``SilenceTrimmer.remap_timings``, los cues
+    de los clips de subtítulo que solapan con el clip de voz (preservando sus referencias:
+    se conserva id/estilo, solo cambian los tiempos). Los cues que caen por completo en un
+    silencio eliminado se descartan (sin perder el resto).
+
+    El clip resultante mantiene ``source_in_s`` y marca el recorte en
+    ``meta['auto_trim']`` para trazabilidad; ``source_out_s`` se conserva (el origen
+    disponible no cambia), y la ``duration_s`` refleja el audio sin silencios.
+    """
+    from app.engines.voice.trim import DEFAULT_PAD, Segment, SilenceTrimmer
+    from app.providers.base import WordTiming
+
+    result = _clone(edit_project)
+    track, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
+    if clip.kind not in AUDIO_KINDS:
+        raise EditOperationError(
+            f"auto_trim_silence: el clip {clip.id!r} no es de audio ({clip.kind!r})."
+        )
+
+    span = _source_span(clip)
+    if span is None:
+        # Sin rango de origen conocido: usa la duración actual como ventana del origen.
+        span = clip.duration_s
+    if span <= 0:
+        raise EditOperationError("auto_trim_silence: el clip no tiene duración recortable.")
+
+    pad = DEFAULT_PAD
+    if "pad" in params:
+        pad = _require_number(params, "pad")
+        if pad < 0:
+            raise EditOperationError("auto_trim_silence: 'pad' no puede ser negativo.")
+
+    silences = _parse_silences(params)
+    segments = SilenceTrimmer.speech_segments(silences, span, pad)
+    if not segments:
+        # Sin tramos de habla detectables: conserva el origen completo (no vacía el clip).
+        segments = [Segment(0.0, span)]
+
+    new_duration = round(sum(s.duration for s in segments), 3)
+    if new_duration <= 0:
+        raise EditOperationError(
+            "auto_trim_silence: la duración resultante tras el recorte sería <= 0."
+        )
+    original_duration = clip.duration_s
+    original_start = clip.start_s
+
+    # Re-mapear los subtítulos que solapan con el clip de voz. Los cues llevan tiempos
+    # ABSOLUTOS en la línea de tiempo; se pasan al eje del ORIGEN del clip (restando
+    # ``start_s`` y sumando ``source_in_s``), se re-mapean con la MISMA lógica pura que la
+    # voz y se devuelven al eje absoluto (sumando ``start_s``, que no cambia).
+    for sub_track in result.tracks:
+        if sub_track.kind != "subtitle":
+            continue
+        remapped_clips: list[EditClip] = []
+        for cue in sub_track.clips:
+            # ¿El cue solapa con el clip de voz en la línea de tiempo?
+            if cue.end_s <= original_start or cue.start_s >= original_start + original_duration:
+                remapped_clips.append(cue)  # fuera del clip de voz: intacto
+                continue
+            src_start = cue.start_s - original_start + clip.source_in_s
+            src_end = cue.end_s - original_start + clip.source_in_s
+            remapped = SilenceTrimmer.remap_timings(
+                [WordTiming(cue.id, src_start, src_end)], segments
+            )
+            if not remapped:
+                # El cue cae por completo en un silencio eliminado: se descarta.
+                continue
+            w = remapped[0]
+            new_cue = cue.model_copy(deep=True)
+            new_cue.start_s = round(original_start + w.start_s, 3)
+            new_cue.duration_s = round(max(0.0, w.end_s - w.start_s), 3)
+            if new_cue.duration_s <= 0:
+                continue
+            remapped_clips.append(new_cue)
+        sub_track.clips = remapped_clips
+
+    # Aplicar el recorte al clip de voz: la duración efectiva pasa a ser la suma de los
+    # tramos de habla (el origen disponible ``source_out_s`` no cambia). La reversibilidad
+    # la aporta el historial de ``Version`` (la operación no sobrescribe el estado previo).
+    clip.duration_s = new_duration
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
@@ -1932,6 +2076,7 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "set_speed": op_set_speed,
     "set_freeze": op_set_freeze,
     "add_media_clip": op_add_media_clip,
+    "auto_trim_silence": op_auto_trim_silence,
 }
 
 
