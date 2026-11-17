@@ -12,9 +12,14 @@ nunca se simula una respuesta y se presenta como real.
 
 from __future__ import annotations
 
+import logging
+import time
+
 import httpx
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaLLM:
@@ -67,3 +72,117 @@ class OllamaLLM:
         response.raise_for_status()
         data = response.json()
         return str(data.get("response", ""))
+
+    # ----------------------------------------------------------------------- #
+    # Gestión de VRAM secuencial (Bloque 3, punto 2): unload verificado
+    # ----------------------------------------------------------------------- #
+
+    def loaded_models(self) -> list[str]:
+        """Modelos actualmente cargados en Ollama (``GET {url}/api/ps``).
+
+        Base de la VERIFICACIÓN DE ESTADO PREVIO (refinamiento 1). Devuelve los nombres
+        del campo ``models[].name`` (o ``model`` como alias). TOLERANTE: si ``/api/ps``
+        falla, no existe (404) o la respuesta no es interpretable, devuelve ``[]`` y lo
+        registra con ``log.info`` (sin lanzar): no poder consultarlo no debe romper nada.
+        """
+        try:
+            resp = httpx.get(f"{self.url}/api/ps", timeout=5.0)
+            if getattr(resp, "status_code", None) == 404:
+                logger.info(
+                    "Ollama %s: /api/ps no disponible (404); no se puede listar modelos "
+                    "cargados.",
+                    self.url,
+                )
+                return []
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as exc:
+            logger.info(
+                "Ollama %s: no se pudo consultar /api/ps (%s); se asume sin modelos "
+                "cargados.",
+                self.url,
+                exc,
+            )
+            return []
+
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return []
+        names: list[str] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("model")
+            if name:
+                names.append(str(name))
+        return names
+
+    def unload(self) -> None:
+        """Descarga ``self.model`` de la VRAM de Ollama (``keep_alive: 0``), si procede.
+
+        ESTADO PREVIO (refinamiento 1): primero consulta :meth:`loaded_models`; si el
+        modelo NO figura cargado, lo registra y retorna (no se libera lo que no está
+        cargado). Si está cargado, hace ``POST {url}/api/generate`` con
+        ``{'model': self.model, 'keep_alive': 0}``.
+
+        TOLERANTE pero SIN OCULTAR EL ERROR (refinamiento 3): cualquier excepción
+        (``httpx.HTTPError``/``ConnectError``/``TimeoutException`` u otra) se registra con
+        ``log.warning`` y el detalle, y se retorna sin lanzar. Idempotente.
+        """
+        loaded = self.loaded_models()
+        if self.model not in loaded:
+            logger.info(
+                "Ollama %s: el modelo %s no está cargado; no hace falta liberar.",
+                self.url,
+                self.model,
+            )
+            return
+
+        try:
+            resp = httpx.post(
+                f"{self.url}/api/generate",
+                json={"model": self.model, "keep_alive": 0},
+                timeout=min(self.timeout, 30.0),
+            )
+            resp.raise_for_status()
+            logger.info(
+                "Ollama %s: solicitada la descarga del modelo %s (keep_alive=0).",
+                self.url,
+                self.model,
+            )
+        except Exception as exc:  # noqa: BLE001 - tolerante, pero se registra el detalle
+            logger.warning(
+                "Fallo al liberar el modelo %s de Ollama (%s): %s; se continúa.",
+                self.model,
+                self.url,
+                exc,
+            )
+
+    def verify_unloaded(
+        self, *, timeout_s: float = 30.0, poll_interval_s: float = 1.0
+    ) -> bool:
+        """Verifica que Ollama descargó efectivamente ``self.model`` (``GET /api/ps``).
+
+        Tras :meth:`unload`, consulta ``/api/ps`` en bucle hasta que el modelo ya NO
+        figure cargado o se agote ``timeout_s``. Devuelve ``True`` si se confirmó la
+        descarga, ``False`` si expiró. Registra el resultado (``log.info`` en éxito,
+        ``log.warning`` si no se confirmó). NUNCA lanza: el objetivo es informar y no
+        bloquear el pipeline. Si ``/api/ps`` no existe/falla, :meth:`loaded_models`
+        degrada a ``[]`` (log), por lo que verify devuelve ``True`` de forma best-effort.
+        """
+        deadline = time.monotonic() + max(timeout_s, 0.0)
+        interval = max(poll_interval_s, 0.0)
+        while True:
+            if self.model not in self.loaded_models():
+                logger.info("Ollama %s: liberó el modelo %s.", self.url, self.model)
+                return True
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Ollama %s: no confirmó la descarga de %s tras %.1fs; se continúa "
+                    "igualmente.",
+                    self.url,
+                    self.model,
+                    timeout_s,
+                )
+                return False
+            time.sleep(interval)
