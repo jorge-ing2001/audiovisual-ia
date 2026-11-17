@@ -35,6 +35,9 @@ export interface Project {
   resolution: string;
   status: string;
   provider_overrides: Record<string, unknown> | null;
+  // Administración (FEAT-002/003). `folder` agrupa proyectos; `tags` siempre es lista.
+  folder: string | null;
+  tags: string[];
   created_at: string;
 }
 
@@ -45,6 +48,8 @@ export interface ProjectCreate {
   aspect_ratio?: string;
   resolution?: string;
   provider_overrides?: Record<string, unknown> | null;
+  folder?: string | null;
+  tags?: string[];
 }
 
 export interface ProjectUpdate {
@@ -55,6 +60,16 @@ export interface ProjectUpdate {
   resolution?: string;
   status?: string;
   provider_overrides?: Record<string, unknown> | null;
+  // Administración (FEAT-002/003): mover de carpeta y editar etiquetas.
+  folder?: string | null;
+  tags?: string[];
+}
+
+/** Filtros opcionales de `GET /projects` (q + tag + folder). */
+export interface ProjectListFilters {
+  q?: string;
+  tag?: string;
+  folder?: string;
 }
 
 export interface Scene {
@@ -226,8 +241,28 @@ export function fetchImageBackends(): Promise<ImageBackendsSettings> {
 // Proyectos (/projects)
 // --------------------------------------------------------------------------- //
 
-export function listProjects(): Promise<Project[]> {
-  return request<Project[]>("/projects");
+/**
+ * Lista proyectos con filtros OPCIONALES (`q`/`tag`/`folder`) que se envían como query
+ * params a `GET /projects`. Sin filtros devuelve todos (compatibilidad). El backend aplica
+ * `q` como substring sobre name/prompt, `tag` como pertenencia y `folder` como igualdad.
+ */
+export function listProjects(filters: ProjectListFilters = {}): Promise<Project[]> {
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.tag) params.set("tag", filters.tag);
+  if (filters.folder) params.set("folder", filters.folder);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return request<Project[]>(`/projects${query}`);
+}
+
+/** Lista de tags distintos existentes (`GET /projects/tags`), para poblar filtros. */
+export function listTags(): Promise<string[]> {
+  return request<string[]>("/projects/tags");
+}
+
+/** Lista de carpetas distintas existentes (`GET /projects/folders`), para poblar filtros. */
+export function listFolders(): Promise<string[]> {
+  return request<string[]>("/projects/folders");
 }
 
 export function getProject(projectId: number): Promise<Project> {
@@ -250,6 +285,42 @@ export function updateProject(projectId: number, body: ProjectUpdate): Promise<P
 
 export function deleteProject(projectId: number): Promise<void> {
   return request<void>(`/projects/${projectId}`, { method: "DELETE" });
+}
+
+/** Cuerpo opcional de `duplicateProject` (nombre del proyecto duplicado). */
+export interface ProjectDuplicateRequest {
+  name?: string;
+}
+
+/**
+ * Resultado de `POST /projects/{id}/duplicate`: el backend responde con el `Project`
+ * duplicado (modo síncrono, proyectos pequeños) o con un `Job` de seguimiento (modo cola,
+ * proyectos grandes). Se discrimina con `isJob` mirando el campo `type` del Job.
+ */
+export type DuplicateResult = Project | Job;
+
+/** Type guard: distingue un `Job` de un `Project` en la respuesta de duplicación. */
+export function isJob(result: DuplicateResult): result is Job {
+  return (
+    typeof (result as Job).type === "string" &&
+    typeof (result as Job).status === "string" &&
+    "progress" in result
+  );
+}
+
+/**
+ * Duplica un proyecto (copia profunda con identidades nuevas). Devuelve el `Project`
+ * nuevo (síncrono) o un `Job` para polling (proyectos grandes). El llamante usa `isJob`
+ * para decidir si debe sondear el job con `useJobPolling` antes de refrescar.
+ */
+export function duplicateProject(
+  projectId: number,
+  body: ProjectDuplicateRequest = {},
+): Promise<DuplicateResult> {
+  return request<DuplicateResult>(`/projects/${projectId}/duplicate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 // --------------------------------------------------------------------------- //

@@ -2,7 +2,7 @@
   "id": "FEAT-003",
   "type": "feat",
   "description": "Administracion de proyectos (UI en el Dashboard): acciones reales por proyecto (renombrar via PATCH, duplicar via POST .../duplicate con polling si devuelve job, borrar con confirmacion, editar tags/carpeta) y barra de busqueda/filtrado (q + tag + folder) que llaman a la API. Toda accion es una llamada real; sin estado simulado.",
-  "status": "pending",
+  "status": "in_progress",
   "steps": [
     "frontend/lib/api.ts: extender interface Project y ProjectUpdate con folder?: string | null y tags?: string[]; extender listProjects para aceptar { q?, tag?, folder? } como query params; anadir duplicateProject(projectId, body?) (POST /projects/{id}/duplicate) que devuelve Project o Job (tipar la union o dos helpers); opcional listTags()/listFolders().",
     "frontend/components/Dashboard.tsx: anadir por cada card un menu de acciones (reutilizar Button/Card de components/ui.tsx): Renombrar (input inline + updateProject), Duplicar (duplicateProject; si devuelve job, usar el hook de polling existente lib/useJobPolling y refrescar al terminar), Borrar (dialogo de confirmacion + deleteProject + refresco), Editar tags/carpeta (updateProject). Mostrar chips de tags y la carpeta en la card.",
