@@ -22,6 +22,7 @@ from collections.abc import Callable
 
 from app.engines.editor.model import (
     AUDIO_KINDS,
+    VISUAL_HIDE_KINDS,
     VISUAL_KINDS,
     EditClip,
     EditProject,
@@ -298,6 +299,10 @@ def compile_remotion_props(
     title_clips: list[dict] = []
     overlay_clips: list[dict] = []
     for track in sorted(edit_project.tracks, key=lambda t: t.order):
+        # Pista VISUAL oculta (``hidden``): se omiten sus clips en preview y export. Con
+        # ``hidden=False`` (default) NO cambia nada respecto al baseline (regresión §5.1).
+        if track.hidden and track.kind in VISUAL_HIDE_KINDS:
+            continue
         for clip in track.clips:
             if not clip.enabled:
                 continue

@@ -25,6 +25,15 @@ export const VISUAL_RENDER_KINDS: readonly TrackKind[] = [
   "title",
   "overlay",
 ];
+// Pistas VISUALES a las que afecta `hidden` (se omiten en preview/export). Espejo de
+// VISUAL_HIDE_KINDS en model.py. Incluye subtitle (contenido visual).
+export const VISUAL_HIDE_KINDS: readonly TrackKind[] = [
+  "video",
+  "image",
+  "title",
+  "overlay",
+  "subtitle",
+];
 export const AUDIO_KINDS: readonly TrackKind[] = ["voice", "music", "sfx"];
 
 export interface VisualTransform {
@@ -182,8 +191,15 @@ export interface EditTrack {
   kind: TrackKind;
   name: string;
   order: number;
+  // Banderas de pista (espejo de EditTrack en model.py):
+  // - muted: silencia AUDIO (voice/music/sfx) en preview/export.
+  // - hidden: oculta una pista VISUAL (video/image/title/overlay/subtitle) en
+  //   preview/export (no en el timeline). Default neutro (false): un documento previo sin
+  //   el campo se trata igual que antes (regresión).
+  // - locked: protege la edición; las operaciones que mutan clips la rechazan.
   muted: boolean;
   locked: boolean;
+  hidden: boolean;
   volume: number;
   clips: EditClip[];
 }

@@ -15,7 +15,7 @@ import type {
   EditTrack,
   SubtitlePreset,
 } from "@/lib/editor/types";
-import { AUDIO_KINDS, VISUAL_KINDS } from "@/lib/editor/types";
+import { AUDIO_KINDS, VISUAL_HIDE_KINDS, VISUAL_KINDS } from "@/lib/editor/types";
 
 // Forma de inputProps (espejo de remotion/src/types.ts::EditProps).
 export interface EditTransformInput {
@@ -468,6 +468,14 @@ export function compileEditInputProps(
 
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
   for (const track of tracks) {
+    // Pista VISUAL oculta (hidden): se omiten sus clips (espejo de compile.py). Con
+    // hidden=false (default) el inputProps es idéntico al baseline (regresión).
+    if (
+      track.hidden &&
+      (VISUAL_HIDE_KINDS as readonly string[]).includes(track.kind)
+    ) {
+      continue;
+    }
     for (const clip of track.clips) {
       if (!clip.enabled) continue;
       if ((VISUAL_KINDS as readonly string[]).includes(clip.kind)) {

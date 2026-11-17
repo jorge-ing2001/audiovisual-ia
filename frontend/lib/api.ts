@@ -441,6 +441,36 @@ export function applyEditOp(
   });
 }
 
+/**
+ * Fija banderas de una pista (lock/hide/mute) con la operación `set_track_flags` (FEAT-002).
+ *
+ * Azúcar tipado sobre `applyEditOp`: envía solo las banderas indicadas. `locked` protege la
+ * edición, `hidden` oculta una pista VISUAL en preview/export y `muted` silencia AUDIO.
+ */
+export function setTrackFlags(
+  projectId: number,
+  trackId: string,
+  flags: { locked?: boolean; hidden?: boolean; muted?: boolean },
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "set_track_flags", {
+    track_id: trackId,
+    ...flags,
+  });
+}
+
+/**
+ * Elimina un clip cerrando el hueco en su pista (ripple delete, operación `ripple_delete`).
+ *
+ * Desplaza a la izquierda los clips posteriores de la MISMA pista; no toca otras pistas y
+ * rechaza (422) si la pista está bloqueada.
+ */
+export function rippleDeleteClip(
+  projectId: number,
+  clipId: string,
+): Promise<EditProjectRead> {
+  return applyEditOp(projectId, "ripple_delete", { clip_id: clipId });
+}
+
 /** Deshace la última edición (POST .../editor/undo). 409 si no hay nada que deshacer. */
 export function undoEdit(projectId: number): Promise<EditProjectRead> {
   return request<EditProjectRead>(`/projects/${projectId}/editor/undo`, {

@@ -75,6 +75,8 @@ __all__ = [
     "op_add_overlay",
     "op_set_overlay_style",
     "op_set_position",
+    "op_set_track_flags",
+    "op_ripple_delete",
 ]
 
 #: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
@@ -114,6 +116,34 @@ def _require_track(edit_project: EditProject, track_id: str):
     return track
 
 
+def _require_unlocked(track: EditTrack) -> EditTrack:
+    """Rechaza mutar los clips de una pista bloqueada (``locked``).
+
+    Se invoca en todas las operaciones que modifican clips (trim/split/merge/delete/
+    ripple/move/duplicate/duración/gain/fade/transform/transición/texto/timing/estilo/
+    karaoke/título/overlay/posición...). ``locked`` es protección de edición: NO afecta
+    al preview ni al export (ver ``EditTrack``).
+    """
+    if track.locked:
+        raise EditOperationError(
+            f"La pista {track.id!r} está bloqueada (locked); desbloquéala para editar sus "
+            "clips."
+        )
+    return track
+
+
+def _require_clip_unlocked(
+    edit_project: EditProject, clip_id: str
+) -> tuple[EditTrack, EditClip]:
+    """Localiza ``(track, clip)`` por id y rechaza si su pista está bloqueada."""
+    found = edit_project.find_clip(clip_id)
+    if found is None:
+        raise EditOperationError(f"No existe el clip {clip_id!r} en el proyecto de edición.")
+    track, clip = found
+    _require_unlocked(track)
+    return track, clip
+
+
 def _require_number(params: dict, key: str) -> float:
     value = params.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -140,7 +170,7 @@ def op_trim(edit_project: EditProject, params: dict) -> EditProject:
     el origen). La nueva duración en la línea de tiempo pasa a ser ``source_out - in``.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
 
     new_in = float(params.get("source_in_s", clip.source_in_s))
     new_out = params.get("source_out_s", clip.source_out_s)
@@ -173,6 +203,7 @@ def op_split(edit_project: EditProject, params: dict) -> EditProject:
     if found is None:
         raise EditOperationError(f"split: no existe el clip {clip_id!r}.")
     track, clip = found
+    _require_unlocked(track)
 
     if not (clip.start_s < t_s < clip.end_s):
         raise EditOperationError(
@@ -209,6 +240,7 @@ def op_delete(edit_project: EditProject, params: dict) -> EditProject:
     if found is None:
         raise EditOperationError(f"delete: no existe el clip {clip_id!r}.")
     track, clip = found
+    _require_unlocked(track)
     track.clips.remove(clip)
     return result
 
@@ -221,6 +253,7 @@ def op_duplicate(edit_project: EditProject, params: dict) -> EditProject:
     if found is None:
         raise EditOperationError(f"duplicate: no existe el clip {clip_id!r}.")
     track, clip = found
+    _require_unlocked(track)
 
     copy_clip = clip.model_copy(deep=True)
     copy_clip.id = f"{clip.id}_copy"
@@ -242,6 +275,7 @@ def op_move(edit_project: EditProject, params: dict) -> EditProject:
     if found is None:
         raise EditOperationError(f"move: no existe el clip {clip_id!r}.")
     track, clip = found
+    _require_unlocked(track)
 
     if "start_s" in params:
         new_start = float(params["start_s"])
@@ -254,6 +288,7 @@ def op_move(edit_project: EditProject, params: dict) -> EditProject:
         target = result.track_by_id(target_track_id)
         if target is None:
             raise EditOperationError(f"move: la pista {target_track_id!r} no existe.")
+        _require_unlocked(target)
         if target.kind != clip.kind:
             raise EditOperationError(
                 f"move: no se puede mover un clip {clip.kind!r} a una pista {target.kind!r}."
@@ -270,7 +305,7 @@ def op_set_duration(edit_project: EditProject, params: dict) -> EditProject:
     Para clips recortables respeta el origen: no se puede exceder ``source_out - in``.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     duration = _require_number(params, "duration_s")
     if duration <= 0:
         raise EditOperationError("set_duration: la duración debe ser > 0.")
@@ -294,7 +329,7 @@ def op_set_duration(edit_project: EditProject, params: dict) -> EditProject:
 def op_set_clip_gain(edit_project: EditProject, params: dict) -> EditProject:
     """Fija el volumen (``gain`` >= 0) de un clip de audio (voice/music/sfx)."""
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind not in AUDIO_KINDS:
         raise EditOperationError(
             f"set_clip_gain: el clip {clip.id!r} no es de audio ({clip.kind!r})."
@@ -334,7 +369,7 @@ def op_set_fade(edit_project: EditProject, params: dict) -> EditProject:
     propio clip). Se reflejan como filtros ``afade`` en la preparación del ``MixTrack``.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind not in AUDIO_KINDS:
         raise EditOperationError(
             f"set_fade: el clip {clip.id!r} no es de audio ({clip.kind!r})."
@@ -371,7 +406,7 @@ def op_replace_asset(edit_project: EditProject, params: dict) -> EditProject:
     propia extensión; la duración en la línea de tiempo se conserva.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind not in VISUAL_KINDS:
         raise EditOperationError(
             f"replace_asset: el clip {clip.id!r} no es visual ({clip.kind!r})."
@@ -393,7 +428,7 @@ def op_set_transform(edit_project: EditProject, params: dict) -> EditProject:
     no indicados conservan su valor actual.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind not in VISUAL_KINDS:
         raise EditOperationError(
             f"set_transform: el clip {clip.id!r} no es visual ({clip.kind!r})."
@@ -425,7 +460,7 @@ def op_set_transition(edit_project: EditProject, params: dict) -> EditProject:
     (``none``|``fade``) y ``duration_s`` (>= 0). ``none`` quita la transición.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind not in VISUAL_KINDS:
         raise EditOperationError(
             f"set_transition: el clip {clip.id!r} no es visual ({clip.kind!r})."
@@ -458,7 +493,7 @@ def op_set_transition(edit_project: EditProject, params: dict) -> EditProject:
 def op_set_text(edit_project: EditProject, params: dict) -> EditProject:
     """Cambia el texto de un clip de subtítulo."""
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "subtitle":
         raise EditOperationError(
             f"set_text: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
@@ -473,7 +508,7 @@ def op_set_text(edit_project: EditProject, params: dict) -> EditProject:
 def op_set_timing(edit_project: EditProject, params: dict) -> EditProject:
     """Fija ``start_s`` (>= 0) y/o ``duration_s`` (> 0) de un clip de subtítulo."""
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "subtitle":
         raise EditOperationError(
             f"set_timing: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
@@ -521,7 +556,7 @@ def op_set_style(edit_project: EditProject, params: dict) -> EditProject:
     ``bg_padding``, ``bg_radius``). Los campos no indicados conservan su valor.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "subtitle":
         raise EditOperationError(
             f"set_style: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
@@ -597,7 +632,7 @@ def op_apply_subtitle_preset(edit_project: EditProject, params: dict) -> EditPro
     manual y el karaoke del clip.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "subtitle":
         raise EditOperationError(
             f"apply_subtitle_preset: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
@@ -631,6 +666,9 @@ def op_apply_subtitle_preset_all(edit_project: EditProject, params: dict) -> Edi
         if track.kind != "subtitle":
             continue
         if track_id is not None and track.id != track_id:
+            continue
+        # Pistas bloqueadas se saltan (protección de edición); no abortan el gesto global.
+        if track.locked:
             continue
         for clip in track.clips:
             _apply_preset_to_clip(clip, preset)
@@ -700,7 +738,7 @@ def op_set_karaoke(edit_project: EditProject, params: dict) -> EditProject:
     render cae al resaltado por reparto uniforme. Rechaza clips no-subtítulo.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "subtitle":
         raise EditOperationError(
             f"set_karaoke: el clip {clip.id!r} no es un subtítulo ({clip.kind!r})."
@@ -753,6 +791,7 @@ def op_merge(edit_project: EditProject, params: dict) -> EditProject:
     track_b, clip_b = found_b
     if track_a.id != track_b.id:
         raise EditOperationError("merge: los clips deben estar en la misma pista.")
+    _require_unlocked(track_a)
 
     first, second = (clip_a, clip_b) if clip_a.start_s <= clip_b.start_s else (clip_b, clip_a)
     if first.kind != second.kind:
@@ -838,6 +877,7 @@ def op_add_title(edit_project: EditProject, params: dict) -> EditProject:
     """
     result = _clone(edit_project)
     track = _require_track(result, _require_str(params, "track_id"))
+    _require_unlocked(track)
     if track.kind != "title":
         raise EditOperationError(
             f"add_title: la pista {track.id!r} no es de títulos ({track.kind!r})."
@@ -911,7 +951,7 @@ def op_set_title_style(edit_project: EditProject, params: dict) -> EditProject:
     campos de contorno/sombra/fondo heredados. Los no indicados conservan su valor.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "title":
         raise EditOperationError(
             f"set_title_style: el clip {clip.id!r} no es un título ({clip.kind!r})."
@@ -958,7 +998,7 @@ def op_set_title_animation(edit_project: EditProject, params: dict) -> EditProje
     conservan su valor.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "title":
         raise EditOperationError(
             f"set_title_animation: el clip {clip.id!r} no es un título ({clip.kind!r})."
@@ -997,6 +1037,7 @@ def op_add_overlay(edit_project: EditProject, params: dict) -> EditProject:
     """
     result = _clone(edit_project)
     track = _require_track(result, _require_str(params, "track_id"))
+    _require_unlocked(track)
     if track.kind != "overlay":
         raise EditOperationError(
             f"add_overlay: la pista {track.id!r} no es de overlays ({track.kind!r})."
@@ -1049,7 +1090,7 @@ def op_set_overlay_style(edit_project: EditProject, params: dict) -> EditProject
     (0..1), ``rotation`` (grados) y ``tile`` (bool). Los no indicados conservan su valor.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
     if clip.kind != "overlay":
         raise EditOperationError(
             f"set_overlay_style: el clip {clip.id!r} no es un overlay ({clip.kind!r})."
@@ -1096,7 +1137,7 @@ def op_set_position(edit_project: EditProject, params: dict) -> EditProject:
     si el tipo no admite posicionado o si el ancla cae fuera de 0..1.
     """
     result = _clone(edit_project)
-    clip = _require_clip(result, _require_str(params, "clip_id"))
+    _, clip = _require_clip_unlocked(result, _require_str(params, "clip_id"))
 
     if clip.kind in ("title", "overlay"):
         has_x = "anchor_x" in params
@@ -1150,6 +1191,67 @@ def op_set_position(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Propiedades de pista (bloquear / ocultar / silenciar) y edición ripple
+# --------------------------------------------------------------------------- #
+
+
+def op_set_track_flags(edit_project: EditProject, params: dict) -> EditProject:
+    """Fija una o varias banderas de una pista (``locked``/``hidden``/``muted``).
+
+    Params: ``track_id`` y cualquiera de ``locked``/``hidden``/``muted`` (bool). Al menos
+    una debe venir. Semántica (ver ``EditTrack``): ``muted`` silencia AUDIO, ``hidden``
+    oculta VISUAL en preview/export, ``locked`` protege la edición. La operación no rechaza
+    poner ``muted`` en una pista visual ni ``hidden`` en una de audio: es un no-op semántico
+    fuera de su dominio (el compilador solo consume cada bandera en las pistas donde aplica).
+    Una sola operación cubre lock/hide/mute (menos superficie que tres).
+    """
+    result = _clone(edit_project)
+    track = _require_track(result, _require_str(params, "track_id"))
+
+    touched = False
+    for key in ("locked", "hidden", "muted"):
+        if key in params:
+            value = params[key]
+            if not isinstance(value, bool):
+                raise EditOperationError(
+                    f"set_track_flags: '{key}' debe ser booleano."
+                )
+            setattr(track, key, value)
+            touched = True
+    if not touched:
+        raise EditOperationError(
+            "set_track_flags: indica al menos una bandera ('locked'/'hidden'/'muted')."
+        )
+    return result
+
+
+def op_ripple_delete(edit_project: EditProject, params: dict) -> EditProject:
+    """Elimina un clip y cierra el hueco desplazando a la izquierda los posteriores.
+
+    Params: ``clip_id``. Borra el clip y desplaza hacia la izquierda, por la duración del
+    clip borrado, todos los clips de LA MISMA pista que empiezan en o después del inicio
+    del clip eliminado (``start_s >= start_s`` del borrado), de modo que no quede hueco. No
+    toca otras pistas (ripple por pista). Rechaza si la pista está ``locked``. Ningún
+    ``start_s`` resultante baja de 0 (el desplazamiento solo afecta a clips posteriores).
+    """
+    result = _clone(edit_project)
+    clip_id = _require_str(params, "clip_id")
+    found = result.find_clip(clip_id)
+    if found is None:
+        raise EditOperationError(f"ripple_delete: no existe el clip {clip_id!r}.")
+    track, clip = found
+    _require_unlocked(track)
+
+    gap = clip.duration_s
+    deleted_start = clip.start_s
+    track.clips.remove(clip)
+    for other in track.clips:
+        if other.start_s >= deleted_start - 1e-9:
+            other.start_s = round(max(0.0, other.start_s - gap), 3)
+    return result
+
+
 OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "trim": op_trim,
     "split": op_split,
@@ -1178,6 +1280,8 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "add_overlay": op_add_overlay,
     "set_overlay_style": op_set_overlay_style,
     "set_position": op_set_position,
+    "set_track_flags": op_set_track_flags,
+    "ripple_delete": op_ripple_delete,
 }
 
 

@@ -37,6 +37,7 @@ __all__ = [
     "EditProject",
     "VISUAL_KINDS",
     "VISUAL_RENDER_KINDS",
+    "VISUAL_HIDE_KINDS",
     "AUDIO_KINDS",
 ]
 
@@ -52,6 +53,11 @@ TrackKind = Literal[
 VISUAL_KINDS: tuple[TrackKind, ...] = ("video", "image")
 #: Pistas que pinta la composición ``Edit`` por encima del fondo (visuales + título + overlay).
 VISUAL_RENDER_KINDS: tuple[TrackKind, ...] = ("video", "image", "title", "overlay")
+#: Pistas VISUALES a las que afecta ``EditTrack.hidden`` (se omiten en preview/export).
+#: Incluye también los subtítulos, que son contenido visual aunque no "media" recortable.
+VISUAL_HIDE_KINDS: tuple[TrackKind, ...] = (
+    "video", "image", "title", "overlay", "subtitle"
+)
 #: Pistas que alimentan el ``AudioMixer`` (voice/music/sfx).
 AUDIO_KINDS: tuple[TrackKind, ...] = ("voice", "music", "sfx")
 
@@ -379,7 +385,21 @@ class EditClip(BaseModel):
 
 
 class EditTrack(BaseModel):
-    """Una pista del editor: colección ordenada de clips de un mismo tipo."""
+    """Una pista del editor: colección ordenada de clips de un mismo tipo.
+
+    Banderas de pista (semántica consumida por ``operations.py`` y ``compile.py``):
+
+    - ``muted``: silencia una pista de AUDIO (voice/music/sfx). El compilador omite sus
+      clips de ``audioClips`` y de los ``MixTrack`` del ``AudioMixer``. En pistas VISUALES
+      no tiene efecto (el equivalente visual es ``hidden``).
+    - ``hidden``: oculta una pista VISUAL (video/image/title/overlay/subtitle) en el
+      preview y en el export: el compilador no emite sus clips. NO afecta a su presencia en
+      el timeline del frontend (la pista se sigue viendo y editando). Default neutro
+      (``False``): un documento previo sin este campo valida y compila IGUAL (regresión).
+    - ``locked``: protege la edición. Las operaciones que MUTAN clips de la pista
+      (trim/split/merge/delete/ripple/move/batch...) la rechazan con ``EditOperationError``.
+      NO afecta a preview ni export (una pista bloqueada se sigue renderizando).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -389,6 +409,7 @@ class EditTrack(BaseModel):
     order: int = 0
     muted: bool = False
     locked: bool = False
+    hidden: bool = False
     volume: float = 1.0
     clips: list[EditClip] = Field(default_factory=list)
 

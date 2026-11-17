@@ -47,6 +47,7 @@ import {
   findClip,
   isAudioKind,
   isVisualKind,
+  VISUAL_HIDE_KINDS,
   type EditClip,
   type EditMeta,
   type EditProject,
@@ -785,6 +786,8 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         durationS={durationS}
         selectedClipId={selectedClipId}
         onSelect={setSelectedClipId}
+        busy={busy}
+        onOp={runOp}
       />
     </div>
   );
@@ -946,16 +949,95 @@ function TitleOverlayToolbar({
 // Línea de tiempo multipista
 // --------------------------------------------------------------------------- //
 
+// Controles por pista (candado / ojo / altavoz) — FEAT-002. Cada botón alterna una
+// bandera de la pista con la operación `set_track_flags` (una sola op cubre las tres):
+// - locked (candado): protege la edición; las operaciones que mutan clips la rechazan.
+// - hidden (ojo): oculta una pista VISUAL en preview/export (no en el timeline).
+// - muted (altavoz): silencia una pista de AUDIO.
+// El ojo solo se muestra en pistas visuales y el altavoz solo en pistas de audio (cada
+// bandera solo tiene efecto en su dominio); el candado está en todas.
+function TrackFlagControls({
+  track,
+  busy,
+  onOp,
+}: {
+  track: EditTrack;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+}) {
+  const isVisual = (VISUAL_HIDE_KINDS as readonly string[]).includes(track.kind);
+  const isAudio = isAudioKind(track.kind);
+  const toggle = (flag: "locked" | "hidden" | "muted", value: boolean) =>
+    void onOp("set_track_flags", { track_id: track.id, [flag]: value });
+  const btn =
+    "rounded px-1.5 py-0.5 text-[11px] leading-none transition-colors disabled:opacity-40";
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        disabled={busy}
+        aria-pressed={track.locked}
+        title={track.locked ? "Pista bloqueada: desbloquear" : "Bloquear pista"}
+        onClick={() => toggle("locked", !track.locked)}
+        className={`${btn} ${
+          track.locked
+            ? "bg-amber-500/20 text-amber-300"
+            : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+        }`}
+      >
+        {track.locked ? "🔒" : "🔓"}
+      </button>
+      {isVisual && (
+        <button
+          type="button"
+          disabled={busy}
+          aria-pressed={track.hidden}
+          title={track.hidden ? "Pista oculta: mostrar" : "Ocultar pista"}
+          onClick={() => toggle("hidden", !track.hidden)}
+          className={`${btn} ${
+            track.hidden
+              ? "bg-sky-500/20 text-sky-300"
+              : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          {track.hidden ? "🚫" : "👁"}
+        </button>
+      )}
+      {isAudio && (
+        <button
+          type="button"
+          disabled={busy}
+          aria-pressed={track.muted}
+          title={track.muted ? "Pista silenciada: activar" : "Silenciar pista"}
+          onClick={() => toggle("muted", !track.muted)}
+          className={`${btn} ${
+            track.muted
+              ? "bg-rose-500/20 text-rose-300"
+              : "bg-neutral-800 text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          {track.muted ? "🔇" : "🔊"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Timeline({
   project,
   durationS,
   selectedClipId,
   onSelect,
+  busy,
+  onOp,
 }: {
   project: EditProject;
   durationS: number;
   selectedClipId: string | null;
   onSelect: (id: string) => void;
+  busy: boolean;
+  onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
 }) {
   const scale = durationS > 0 ? 100 / durationS : 0; // % por segundo
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
@@ -966,11 +1048,20 @@ function Timeline({
       <div className="flex flex-col gap-2">
         {tracks.map((track) => (
           <div key={track.id} className="flex items-center gap-3">
-            <div className="w-24 shrink-0 text-xs text-neutral-400">
-              {track.name || track.kind}
-              {track.muted && <span className="ml-1 text-rose-400">(mute)</span>}
+            <div className="flex w-32 shrink-0 flex-col gap-1">
+              <div className="truncate text-xs text-neutral-400">
+                {track.name || track.kind}
+                {track.locked && (
+                  <span className="ml-1 text-amber-400">(bloqueada)</span>
+                )}
+              </div>
+              <TrackFlagControls track={track} busy={busy} onOp={onOp} />
             </div>
-            <div className="relative h-9 flex-1 overflow-hidden rounded-md border border-neutral-800 bg-neutral-950">
+            <div
+              className={`relative h-9 flex-1 overflow-hidden rounded-md border bg-neutral-950 ${
+                track.locked ? "border-amber-500/60" : "border-neutral-800"
+              } ${track.hidden ? "opacity-50" : ""}`}
+            >
               {track.clips.map((clip) => {
                 const left = Math.max(0, clip.start_s * scale);
                 const width = Math.max(1.5, clip.duration_s * scale);
