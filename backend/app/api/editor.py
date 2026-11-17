@@ -42,7 +42,10 @@ from app.engines.editor.convert import timeline_to_edit_project
 from app.engines.editor.model import EditProject, EditTrack
 from app.engines.editor.operations import EditOperationError, apply_operation
 from app.engines.editor.store import (
+    DEFAULT_SEQUENCE_ID,
+    create_sequence,
     history,
+    list_sequences,
     load_active_edit_project,
     redo,
     save_edit_project,
@@ -62,14 +65,31 @@ from app.engines.voice.subtitles import Cue, _fmt
 from app.jobs.queue import JobQueue
 from app.models.entities import Asset, Job, Project
 from app.models.schemas import (
+    AssetRead,
     EditExportResponse,
     EditOperationRequest,
     EditProjectRead,
 )
 from app.storage.db import get_db
 from app.storage.media import ensure_project_workspace
+from app.storage.uploads import (
+    ALLOWED_AUDIO_CONTENT_TYPES,
+    ALLOWED_AUDIO_EXTS,
+    ALLOWED_IMAGE_CONTENT_TYPES,
+    ALLOWED_IMAGE_EXTS,
+    ALLOWED_VIDEO_CONTENT_TYPES,
+    ALLOWED_VIDEO_EXTS,
+    MAX_MEDIA_UPLOAD_BYTES,
+    MAX_UPLOAD_BYTES,
+    MediaProbeError,
+    probe_media,
+    safe_stem,
+)
 
 router = APIRouter(tags=["editor"])
+
+# Importar medios al editor (FEAT-007): roles de audio admitidos y mapeo a Asset.kind.
+_AUDIO_ROLES = {"voice", "music", "sfx"}
 
 # Import/export de subtítulos (FEAT-003): formatos admitidos y validación.
 _SUBTITLE_EXTS = {".srt", ".vtt", ".ass"}
@@ -114,29 +134,40 @@ def _as_read(edit_project: EditProject) -> EditProjectRead:
     "/projects/{project_id}/editor/open",
     response_model=EditProjectRead,
 )
-def open_editor(project_id: int, session: Session = Depends(get_db)) -> EditProjectRead:
+def open_editor(
+    project_id: int,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
+) -> EditProjectRead:
     """Abre el editor: devuelve el ``EditProject`` activo o lo deriva del último Timeline.
 
-    Idempotente: si ya existe un ``EditProject`` activo lo devuelve sin regenerarlo; si no,
-    construye el ``Timeline`` de generación, lo convierte a ``EditProject`` y lo persiste.
+    Idempotente: si ya existe un ``EditProject`` activo (de la secuencia pedida) lo devuelve
+    sin regenerarlo; si no, construye el ``Timeline`` de generación, lo convierte a
+    ``EditProject`` y lo persiste. Sin ``sequence`` opera sobre ``main`` (regresión).
     """
     project = _get_project_or_404(session, project_id)
 
-    existing = load_active_edit_project(project, session)
+    existing = load_active_edit_project(project, session, sequence)
     if existing is not None:
         return _as_read(existing)
 
     timeline = TimelineBuilder().build(project, session)
     edit_project = timeline_to_edit_project(timeline, project, list(project.assets))
-    saved = save_edit_project(project, session, edit_project)
+    if sequence != DEFAULT_SEQUENCE_ID:
+        edit_project = edit_project.model_copy(update={"sequence_id": sequence})
+    saved = save_edit_project(project, session, edit_project, sequence_id=sequence)
     return _as_read(saved)
 
 
 @router.get("/projects/{project_id}/editor", response_model=EditProjectRead)
-def get_editor(project_id: int, session: Session = Depends(get_db)) -> EditProjectRead:
-    """Devuelve el ``EditProject`` activo (404 si el editor no se ha abierto aún)."""
+def get_editor(
+    project_id: int,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
+) -> EditProjectRead:
+    """Devuelve el ``EditProject`` activo de la secuencia (404 si el editor no se abrió)."""
     project = _get_project_or_404(session, project_id)
-    edit_project = load_active_edit_project(project, session)
+    edit_project = load_active_edit_project(project, session, sequence)
     if edit_project is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -149,9 +180,15 @@ def get_editor(project_id: int, session: Session = Depends(get_db)) -> EditProje
 def put_editor(
     project_id: int,
     body: dict = Body(...),
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
     session: Session = Depends(get_db),
 ) -> EditProjectRead:
-    """Reemplaza el ``EditProject`` completo (guardado del estado editado) + Version."""
+    """Reemplaza el ``EditProject`` completo (guardado del estado editado) + Version.
+
+    El parámetro ``sequence`` (default ``main``) elige la secuencia sobre la que se guarda;
+    si el body trae ``sequence_id`` distinto, manda el del query (fuente de verdad del
+    endpoint). Sin el parámetro, comportamiento idéntico al actual.
+    """
     project = _get_project_or_404(session, project_id)
 
     # Admite el documento directo o envuelto en ``{"edit_project": {...}}``.
@@ -164,10 +201,15 @@ def put_editor(
             detail=f"EditProject inválido: {exc.errors()}",
         ) from exc
 
+    updates: dict = {}
     if edit_project.project_id != project_id:
-        edit_project = edit_project.model_copy(update={"project_id": project_id})
+        updates["project_id"] = project_id
+    if edit_project.sequence_id != sequence:
+        updates["sequence_id"] = sequence
+    if updates:
+        edit_project = edit_project.model_copy(update=updates)
 
-    saved = save_edit_project(project, session, edit_project)
+    saved = save_edit_project(project, session, edit_project, sequence_id=sequence)
     return _as_read(saved)
 
 
@@ -175,11 +217,16 @@ def put_editor(
 def apply_op(
     project_id: int,
     request: EditOperationRequest,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
     session: Session = Depends(get_db),
 ) -> EditProjectRead:
-    """Aplica UNA operación pura sobre el ``EditProject`` activo, la persiste y versiona."""
+    """Aplica UNA operación pura sobre el ``EditProject`` activo, la persiste y versiona.
+
+    Opera sobre la secuencia ``sequence`` (default ``main``); sin el parámetro, idéntico
+    al actual.
+    """
     project = _get_project_or_404(session, project_id)
-    edit_project = load_active_edit_project(project, session)
+    edit_project = load_active_edit_project(project, session, sequence)
     if edit_project is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -193,15 +240,19 @@ def apply_op(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    saved = save_edit_project(project, session, updated)
+    saved = save_edit_project(project, session, updated, sequence_id=sequence)
     return _as_read(saved)
 
 
 @router.post("/projects/{project_id}/editor/undo", response_model=EditProjectRead)
-def undo_editor(project_id: int, session: Session = Depends(get_db)) -> EditProjectRead:
-    """Deshace: hace activo el estado anterior del historial."""
+def undo_editor(
+    project_id: int,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
+) -> EditProjectRead:
+    """Deshace: hace activo el estado anterior del historial de la secuencia."""
     project = _get_project_or_404(session, project_id)
-    restored = undo(project, session)
+    restored = undo(project, session, sequence)
     if restored is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -211,10 +262,14 @@ def undo_editor(project_id: int, session: Session = Depends(get_db)) -> EditProj
 
 
 @router.post("/projects/{project_id}/editor/redo", response_model=EditProjectRead)
-def redo_editor(project_id: int, session: Session = Depends(get_db)) -> EditProjectRead:
-    """Rehace: avanza al estado siguiente del historial."""
+def redo_editor(
+    project_id: int,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
+) -> EditProjectRead:
+    """Rehace: avanza al estado siguiente del historial de la secuencia."""
     project = _get_project_or_404(session, project_id)
-    restored = redo(project, session)
+    restored = redo(project, session, sequence)
     if restored is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -224,10 +279,91 @@ def redo_editor(project_id: int, session: Session = Depends(get_db)) -> EditProj
 
 
 @router.get("/projects/{project_id}/editor/history")
-def editor_history(project_id: int, session: Session = Depends(get_db)) -> list[dict]:
-    """Lista las versiones del historial de edición (para una UI de historial)."""
+def editor_history(
+    project_id: int,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
+) -> list[dict]:
+    """Lista las versiones del historial de edición de la secuencia (para la UI)."""
     project = _get_project_or_404(session, project_id)
-    return history(project, session)
+    return history(project, session, sequence)
+
+
+@router.get("/projects/{project_id}/editor/sequences")
+def editor_sequences(project_id: int, session: Session = Depends(get_db)) -> list[dict]:
+    """Lista las secuencias del proyecto (id/name/duración/versión activa) (FEAT-008)."""
+    project = _get_project_or_404(session, project_id)
+    return list_sequences(project, session)
+
+
+@router.post(
+    "/projects/{project_id}/editor/sequences",
+    response_model=EditProjectRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_editor_sequence(
+    project_id: int,
+    body: dict = Body(default_factory=dict),
+    session: Session = Depends(get_db),
+) -> EditProjectRead:
+    """Crea una secuencia nueva (FEAT-008), devolviendo su ``EditProject`` inicial.
+
+    Body: ``sequence_id`` (obligatorio), ``name`` (opcional) y ``from`` (``active``, por
+    defecto, duplica la secuencia activa indicada en ``base_sequence`` -default ``main``-;
+    o ``timeline``, deriva del ``Timeline`` de generación como ``open``). Rechaza 409 si la
+    secuencia ya existe y 422 si falta el punto de partida.
+    """
+    project = _get_project_or_404(session, project_id)
+
+    sequence_id = body.get("sequence_id")
+    if not isinstance(sequence_id, str) or not sequence_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'sequence_id' (str) es obligatorio.",
+        )
+    name = body.get("name")
+    if name is not None and not isinstance(name, str):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'name' debe ser str.",
+        )
+
+    source = body.get("from", "active")
+    base_from_active = None
+    from_timeline = None
+    if source == "timeline":
+        timeline = TimelineBuilder().build(project, session)
+        from_timeline = timeline_to_edit_project(timeline, project, list(project.assets))
+    else:
+        base_sequence = body.get("base_sequence", DEFAULT_SEQUENCE_ID)
+        if not isinstance(base_sequence, str) or not base_sequence:
+            base_sequence = DEFAULT_SEQUENCE_ID
+        base_from_active = load_active_edit_project(project, session, base_sequence)
+        if base_from_active is None:
+            # Sin secuencia base activa: deriva del Timeline (como ``open``).
+            timeline = TimelineBuilder().build(project, session)
+            from_timeline = timeline_to_edit_project(
+                timeline, project, list(project.assets)
+            )
+
+    try:
+        created = create_sequence(
+            project,
+            session,
+            sequence_id,
+            name,
+            base_from_active=base_from_active,
+            from_timeline=from_timeline,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_409_CONFLICT
+            if "ya existe" in detail
+            else status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+        raise HTTPException(status_code=code, detail=detail) from exc
+    return _as_read(created)
 
 
 @router.get("/projects/{project_id}/editor/subtitles/export")
@@ -381,24 +517,205 @@ def import_subtitles(
     return _as_read(saved)
 
 
+def _detect_media_kind(ext: str, content_type: str, role: str) -> str:
+    """Detecta el ``Asset.kind`` del fichero por extensión + content-type.
+
+    Imagen → ``image``; vídeo → ``video``; audio → el ``role`` (``voice``/``music``/
+    ``sfx``, default ``music``). Lanza ``HTTPException`` 400 si no es un medio admitido.
+    """
+    is_image = ext in ALLOWED_IMAGE_EXTS or content_type in ALLOWED_IMAGE_CONTENT_TYPES
+    is_video = ext in ALLOWED_VIDEO_EXTS or content_type in ALLOWED_VIDEO_CONTENT_TYPES
+    is_audio = ext in ALLOWED_AUDIO_EXTS or content_type in ALLOWED_AUDIO_CONTENT_TYPES
+    # Prioridad por extensión para evitar ambigüedad de content-types genéricos.
+    if ext in ALLOWED_IMAGE_EXTS:
+        return "image"
+    if ext in ALLOWED_VIDEO_EXTS:
+        return "video"
+    if ext in ALLOWED_AUDIO_EXTS:
+        return role
+    if is_image:
+        return "image"
+    if is_video:
+        return "video"
+    if is_audio:
+        return role
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            "El fichero no es un medio admitido. Formatos: imagen "
+            "(PNG/JPG/JPEG/WEBP/GIF), vídeo (MP4/MOV/WEBM/MKV) o audio "
+            "(MP3/WAV/M4A/AAC/OGG/FLAC)."
+        ),
+    )
+
+
+@router.post(
+    "/projects/{project_id}/editor/media/upload",
+    response_model=AssetRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def upload_editor_media(
+    project_id: int,
+    file: UploadFile = File(...),
+    role: str = Query(
+        "music",
+        pattern="^(voice|music|sfx)$",
+        description="Rol de un AUDIO importado (voice/music/sfx); ignorado para imagen/vídeo.",
+    ),
+    session: Session = Depends(get_db),
+) -> Asset:
+    """Importa un medio (audio/vídeo/imagen) a nivel de PROYECTO para el editor (FEAT-007).
+
+    Detecta el ``kind`` por extensión + content-type: imagen (``image``), vídeo
+    (``video``) o audio (mapeado a ``role`` ∈ ``voice``/``music``/``sfx``, default
+    ``music``). Valida la imagen con Pillow (patrón de ``upload_scene_image``) y el
+    audio/vídeo con **ffprobe** (``AIV_FFPROBE_BIN``): confirma streams válidos y lee
+    ``duration_s``. Si ffprobe no está disponible, rechaza con mensaje accionable (no
+    finge). Guarda el fichero bajo ``media/uploads/`` del workspace (dentro de
+    ``AIV_MEDIA_ROOT``, servible por ``GET /assets/{id}/download`` con Range, que usa el
+    Player) y crea ``Asset(kind correcto, provider='upload')`` con ``duration_s``/
+    dimensiones en ``meta``. Devuelve ``AssetRead``. NO crea el clip: el frontend llama a
+    ``op add_media_clip`` tras subir (I/O y colocación separadas, §6.1).
+    """
+    project = _get_project_or_404(session, project_id)
+
+    if role not in _AUDIO_ROLES:  # defensivo (el pattern ya lo valida)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El parámetro 'role' debe ser 'voice', 'music' o 'sfx'.",
+        )
+
+    original_name = file.filename or ""
+    ext = Path(original_name).suffix.lower()
+    content_type = (file.content_type or "").lower()
+    kind = _detect_media_kind(ext, content_type, role)
+
+    data = file.file.read()
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El fichero subido está vacío.",
+        )
+    # Tope de tamaño: imagen 15 MB, audio/vídeo (media) 200 MB.
+    max_bytes = MAX_UPLOAD_BYTES if kind == "image" else MAX_MEDIA_UPLOAD_BYTES
+    if len(data) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"El fichero supera el tamaño máximo permitido "
+                f"({max_bytes // (1024 * 1024)} MB)."
+            ),
+        )
+
+    # Guarda el fichero en media/uploads/ (bajo AIV_MEDIA_ROOT) con nombre seguro y único.
+    out_dir = ensure_project_workspace(project.id) / "media" / "uploads"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if kind == "image":
+        safe_ext = ext if ext in ALLOWED_IMAGE_EXTS else ".png"
+    elif kind == "video":
+        safe_ext = ext if ext in ALLOWED_VIDEO_EXTS else ".mp4"
+    else:
+        safe_ext = ext if ext in ALLOWED_AUDIO_EXTS else ".mp3"
+    filename = f"{kind}_{safe_stem(original_name)}_{uuid.uuid4().hex[:8]}{safe_ext}"
+    out_path = out_dir / filename
+    out_path.write_bytes(data)
+
+    meta: dict = {
+        "source": "upload",
+        "original_filename": original_name or None,
+        "content_type": content_type or None,
+        "bytes": len(data),
+    }
+
+    if kind == "image":
+        # Validación del contenido real + dimensiones con Pillow.
+        try:
+            import io
+
+            from PIL import Image
+
+            with Image.open(io.BytesIO(data)) as img:
+                img.verify()
+            with Image.open(io.BytesIO(data)) as img2:
+                width, height = img2.size
+        except Exception as exc:  # noqa: BLE001 - cualquier fallo = no es imagen válida
+            out_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El fichero no es una imagen válida o está dañado.",
+            ) from exc
+        meta.update({"width": width, "height": height})
+    else:
+        # Audio/vídeo: validación con ffprobe (streams + duración). Si ffprobe no está,
+        # se rechaza con mensaje accionable (no se finge la validación).
+        try:
+            probe = probe_media(out_path)
+        except MediaProbeError as exc:
+            out_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        if kind == "video" and not probe.has_video:
+            out_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El fichero no contiene un stream de vídeo válido.",
+            )
+        if kind in _AUDIO_ROLES and not probe.has_audio:
+            out_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El fichero no contiene un stream de audio válido.",
+            )
+        meta.update(
+            {
+                "duration_s": probe.duration_s,
+                "width": probe.width,
+                "height": probe.height,
+                "has_video": probe.has_video,
+                "has_audio": probe.has_audio,
+            }
+        )
+        if kind in _AUDIO_ROLES:
+            meta["role"] = role
+
+    asset = Asset(
+        project_id=project.id,
+        scene_id=None,
+        kind=kind,
+        path=str(out_path),
+        provider="upload",
+        meta=meta,
+    )
+    session.add(asset)
+    session.commit()
+    session.refresh(asset)
+    return asset
+
+
 @router.post(
     "/projects/{project_id}/editor/export",
     response_model=EditExportResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 def enqueue_edit_export(
-    project_id: int, session: Session = Depends(get_db)
+    project_id: int,
+    sequence: str = Query(DEFAULT_SEQUENCE_ID),
+    session: Session = Depends(get_db),
 ) -> EditExportResponse:
-    """Encola el job ``edit_export`` que re-renderiza desde el ``EditProject`` activo."""
+    """Encola el job ``edit_export`` que re-renderiza desde el ``EditProject`` de la secuencia."""
     project = _get_project_or_404(session, project_id)
-    if load_active_edit_project(project, session) is None:
+    if load_active_edit_project(project, session, sequence) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="El editor no se ha abierto; usa POST .../editor/open antes de exportar.",
         )
 
     job_id = JobQueue().enqueue(
-        "edit_export", project_id=project_id, payload={"project_id": project_id}
+        "edit_export",
+        project_id=project_id,
+        payload={"project_id": project_id, "sequence": sequence},
     )
     job = session.get(Job, job_id)
     if job is None:  # pragma: no cover - acabamos de crearlo

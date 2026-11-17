@@ -571,6 +571,13 @@ class EditProject(BaseModel):
     # un EditProject previo sin ``markers`` valida igual y compila IGUAL (regresión §3.4);
     # el compilador NO los emite a inputProps (son metadatos, no afectan al render).
     markers: list["EditMarker"] = Field(default_factory=list)
+    # Secuencias múltiples (FEAT-008). Una "secuencia" es un EditProject independiente
+    # identificado por ``sequence_id``; la persistencia (store.py) segmenta activo/undo/
+    # redo/history por ``sequence_id``. Defaults NEUTROS: un EditProject previo sin estos
+    # campos es la secuencia ``main``/``Principal`` y su render/inputProps NO cambia (el
+    # compilador no los emite; son metadatos de persistencia). Regresión §3.5/§3.6.
+    sequence_id: str = "main"
+    sequence_name: str = "Principal"
     source_timeline_version: int | None = None
 
     @property

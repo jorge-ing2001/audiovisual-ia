@@ -15,26 +15,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   addMarker,
+  addMediaClip,
   applyEditOp,
   assetDownloadUrl,
   batchDeleteClips,
   batchMoveClips,
   copyAttributes,
+  createSequence,
   enqueueEditExport,
   exportSubtitles,
   getEditProject,
   importSubtitles,
   latestEditExport,
   listAssets,
+  listSequences,
   openEditor,
   putEditProject,
   redoEdit,
   removeMarker,
   undoEdit,
+  uploadEditMedia,
   uploadOverlay,
   videoDownloadUrl,
   type Asset,
   type CopyableAttr,
+  type EditMediaRole,
   type Job,
   type SubtitleFormat,
 } from "@/lib/api";
@@ -59,7 +64,9 @@ import {
   type EditMarker,
   type EditMeta,
   type EditProject,
+  type EditSequence,
   type EditTrack,
+  type TrackKind,
 } from "@/lib/editor/types";
 import EditComposition from "@/components/remotion/EditComposition";
 import JobProgress from "@/components/JobProgress";
@@ -179,6 +186,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
   // de la barra de selección se pegan al borde de clip/marcador más cercano.
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [assets, setAssets] = useState<Asset[]>([]);
+  // Secuencias múltiples (FEAT-008). `activeSequence` es la secuencia sobre la que operan
+  // TODAS las llamadas del editor; por defecto "main" (regresión: sin tocar el selector, el
+  // comportamiento es el de siempre). `sequences` es el catálogo para el selector.
+  const [activeSequence, setActiveSequence] = useState<string>("main");
+  const [sequences, setSequences] = useState<EditSequence[]>([]);
+  // Importación de medios por drag&drop (FEAT-007): estado del drop en curso y errores.
+  const [mediaDropBusy, setMediaDropBusy] = useState(false);
 
   // Arrastre en curso del clip seleccionado sobre el preview (FEAT-008). Mientras el
   // usuario arrastra, guardamos aquí la posición provisional para re-renderizar el Player
@@ -192,11 +206,22 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
 
   const playerRef = useRef<PlayerRef>(null);
 
-  // Al montar: abre el editor (idempotente) y carga el EditProject + los assets.
+  // Carga el catálogo de secuencias (para el selector). Auxiliar: si falla no bloquea.
+  const refreshSequences = useCallback(() => {
+    listSequences(projectId)
+      .then((list) => setSequences(list))
+      .catch(() => {
+        /* el catálogo es auxiliar */
+      });
+  }, [projectId]);
+
+  // Al montar / al cambiar de secuencia activa: abre el editor de ESA secuencia
+  // (idempotente) y carga el EditProject + los assets. Con activeSequence="main" el
+  // comportamiento es el de siempre (regresión).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    openEditor(projectId)
+    openEditor(projectId, activeSequence)
       .then((read) => {
         if (cancelled) return;
         setProject(read.edit_project);
@@ -205,7 +230,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         // Si ya estaba abierto, un GET sirve igual.
         if (err instanceof ApiError) {
           try {
-            const read = await getEditProject(projectId);
+            const read = await getEditProject(projectId, activeSequence);
             if (!cancelled) setProject(read.edit_project);
             return;
           } catch {
@@ -229,10 +254,12 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         /* la lista de assets es auxiliar (reemplazo de recurso) */
       });
 
+    if (!cancelled) refreshSequences();
+
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, activeSequence, refreshSequences]);
 
   // Detecta el último export previo (si lo hay) para rehabilitar la descarga.
   useEffect(() => {
@@ -344,7 +371,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await applyEditOp(projectId, op, params);
+        const read = await applyEditOp(projectId, op, params, activeSequence);
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -354,7 +381,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [projectId],
+    [projectId, activeSequence],
   );
 
   // Edición de campos sin operación dedicada (transform, estilo de subtítulo, reemplazo
@@ -370,7 +397,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await putEditProject(projectId, next);
+        const read = await putEditProject(projectId, next, activeSequence);
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -380,7 +407,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [project, projectId],
+    [project, projectId, activeSequence],
   );
 
   // ------- selección múltiple: operaciones batch (FEAT-004) ------- //
@@ -393,7 +420,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     setBusy(true);
     setActionError(null);
     try {
-      const read = await batchDeleteClips(projectId, ids);
+      const read = await batchDeleteClips(projectId, ids, activeSequence);
       setProject(read.edit_project);
       setSelectedClipIds([]);
       setSelectedClipId(null);
@@ -404,7 +431,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId, selectedClips]);
+  }, [projectId, selectedClips, activeSequence]);
 
   // Desplaza la selección por delta_s en UN gesto (op batch_move => una Version). Si el
   // snap está activo, ajusta el destino del clip MÁS TEMPRANO al borde/marcador más cercano
@@ -436,7 +463,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await batchMoveClips(projectId, ids, delta);
+        const read = await batchMoveClips(projectId, ids, delta, activeSequence);
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -446,7 +473,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [project, projectId, selectedClips, snapEnabled],
+    [project, projectId, selectedClips, snapEnabled, activeSequence],
   );
 
   // Copia los atributos del clip activo a los demás seleccionados (op copy_attributes =>
@@ -461,7 +488,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await copyAttributes(projectId, selectedClipId, targets, attrs);
+        const read = await copyAttributes(
+          projectId,
+          selectedClipId,
+          targets,
+          attrs,
+          activeSequence,
+        );
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -471,7 +504,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [projectId, selectedClipId, selectedClips],
+    [projectId, selectedClipId, selectedClips, activeSequence],
   );
 
   // ------- marcadores (FEAT-003) ------- //
@@ -484,7 +517,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     setBusy(true);
     setActionError(null);
     try {
-      const read = await addMarker(projectId, t_s);
+      const read = await addMarker(projectId, t_s, {}, activeSequence);
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -493,14 +526,14 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [project, projectId]);
+  }, [project, projectId, activeSequence]);
 
   const handleRemoveMarker = useCallback(
     async (markerId: string) => {
       setBusy(true);
       setActionError(null);
       try {
-        const read = await removeMarker(projectId, markerId);
+        const read = await removeMarker(projectId, markerId, activeSequence);
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -510,14 +543,14 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [projectId],
+    [projectId, activeSequence],
   );
 
   const handleUndo = useCallback(async () => {
     setBusy(true);
     setActionError(null);
     try {
-      const read = await undoEdit(projectId);
+      const read = await undoEdit(projectId, activeSequence);
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -526,13 +559,13 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, activeSequence]);
 
   const handleRedo = useCallback(async () => {
     setBusy(true);
     setActionError(null);
     try {
-      const read = await redoEdit(projectId);
+      const read = await redoEdit(projectId, activeSequence);
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -541,14 +574,14 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, activeSequence]);
 
   const handleExport = useCallback(async () => {
     setBusy(true);
     setActionError(null);
     setExportReady(false);
     try {
-      const res = await enqueueEditExport(projectId);
+      const res = await enqueueEditExport(projectId, activeSequence);
       setExportJobId(res.job_id);
     } catch (err) {
       setActionError(
@@ -557,7 +590,113 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, activeSequence]);
+
+  // ------- secuencias (FEAT-008) ------- //
+
+  // Crea una secuencia nueva duplicando la activa como punto de partida y conmuta a ella.
+  const handleCreateSequence = useCallback(async () => {
+    const name = window.prompt(
+      "Nombre de la nueva secuencia (variante del vídeo):",
+      "Variante",
+    );
+    if (name === null) return;
+    const trimmed = name.trim() || "Variante";
+    // id determinista y seguro a partir del nombre (sin colisión con las existentes).
+    const slugBase =
+      trimmed
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "seq";
+    const existing = new Set(sequences.map((s) => s.sequence_id));
+    let sequenceId = slugBase;
+    let n = 2;
+    while (existing.has(sequenceId)) {
+      sequenceId = `${slugBase}_${n}`;
+      n += 1;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await createSequence(projectId, sequenceId, {
+        name: trimmed,
+        from: "active",
+        baseSequence: activeSequence,
+      });
+      refreshSequences();
+      setActiveSequence(sequenceId); // conmuta y recarga vía el efecto
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "No se pudo crear la secuencia",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, activeSequence, sequences, refreshSequences]);
+
+  // ------- importar medios por drag&drop (FEAT-007) ------- //
+
+  // Al soltar un archivo del explorador sobre una pista: sube el medio (uploadEditMedia) y
+  // coloca el clip en el start_s de la posición de drop (op add_media_clip), integrando el
+  // snap de FEAT-003 (el start_s se ajusta al borde/marcador más cercano si el snap está
+  // activo). El `role` de audio se deriva del kind de la pista (voice/music/sfx).
+  const handleDropMedia = useCallback(
+    async (track: EditTrack, rawStartS: number, file: File) => {
+      if (!project) return;
+      // El kind del clip debe casar con el de la pista (lo valida también el backend).
+      const kind = track.kind as TrackKind;
+      const role: EditMediaRole | undefined = isAudioKind(kind)
+        ? (kind as EditMediaRole)
+        : undefined;
+
+      // Snap del start_s a los bordes de clip/marcadores (FEAT-003).
+      let startS = Math.max(0, rawStartS);
+      if (snapEnabled) {
+        const candidates = collectSnapCandidates(project, null);
+        startS = Math.max(0, Math.round(snapTime(startS, candidates, 0.25) * 1000) / 1000);
+      }
+
+      setMediaDropBusy(true);
+      setBusy(true);
+      setActionError(null);
+      try {
+        const asset = await uploadEditMedia(projectId, file, role);
+        const sourceDuration =
+          typeof asset.meta?.duration_s === "number"
+            ? (asset.meta.duration_s as number)
+            : undefined;
+        // Duración en la línea de tiempo: la del origen (audio/vídeo) o 3s para imagen.
+        const durationS =
+          sourceDuration && sourceDuration > 0 ? sourceDuration : 3.0;
+        const read = await addMediaClip(
+          projectId,
+          {
+            trackId: track.id,
+            assetId: asset.id,
+            startS,
+            durationS,
+            kind,
+            sourceDurationS: sourceDuration,
+          },
+          activeSequence,
+        );
+        setProject(read.edit_project);
+        setAssets((prev) => [...prev, asset]);
+      } catch (err) {
+        setActionError(
+          err instanceof ApiError
+            ? err.message
+            : "No se pudo importar el medio soltado",
+        );
+      } finally {
+        setMediaDropBusy(false);
+        setBusy(false);
+      }
+    },
+    [project, projectId, snapEnabled, activeSequence],
+  );
 
   // Import/export de subtítulos (FEAT-003): descarga el fichero o sube uno nuevo que
   // reemplaza/añade la pista subtitle (crea Version → undo/redo lo recoge).
@@ -599,6 +738,10 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     },
     [projectId],
   );
+  // Nota: la importación de subtítulos opera sobre la secuencia activa a través del
+  // EditProject activo del backend; no necesita el parámetro `sequence` explícito porque
+  // el endpoint actúa sobre `main` por defecto (regresión); las secuencias múltiples usan
+  // las operaciones del editor que sí lo pasan.
 
   // Cambio de formato del proyecto (9:16/16:9/1:1) vía la op pura set_format, que fija
   // resolución + zonas seguras en meta (afecta al encuadre del preview y del export).
@@ -617,23 +760,30 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
       let current = project;
       let titleTrack = current.tracks.find((t) => t.kind === "title");
       if (!titleTrack) {
-        const read = await applyEditOp(projectId, "add_track", {
-          kind: "title",
-          name: "Títulos",
-        });
+        const read = await applyEditOp(
+          projectId,
+          "add_track",
+          { kind: "title", name: "Títulos" },
+          activeSequence,
+        );
         current = read.edit_project;
         titleTrack = current.tracks.find((t) => t.kind === "title");
       }
       if (!titleTrack) throw new ApiError(0, "No se pudo crear la pista de títulos.");
       const start = editProjectDurationS(current) > 0 ? 0 : 0;
-      const read = await applyEditOp(projectId, "add_title", {
-        track_id: titleTrack.id,
-        text: "Título",
-        start_s: start,
-        duration_s: 3.0,
-        title: { kind: "intro" },
-        animation: { type: "fade" },
-      });
+      const read = await applyEditOp(
+        projectId,
+        "add_title",
+        {
+          track_id: titleTrack.id,
+          text: "Título",
+          start_s: start,
+          duration_s: 3.0,
+          title: { kind: "intro" },
+          animation: { type: "fade" },
+        },
+        activeSequence,
+      );
       setProject(read.edit_project);
     } catch (err) {
       setActionError(
@@ -642,7 +792,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
     } finally {
       setBusy(false);
     }
-  }, [project, projectId]);
+  }, [project, projectId, activeSequence]);
 
   // Subir un logo/overlay (FEAT-006): sube la imagen (uploadOverlay), crea la pista
   // `overlay` si no existe y añade un clip de overlay con el asset_id devuelto.
@@ -657,22 +807,29 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         let current = project;
         let overlayTrack = current.tracks.find((t) => t.kind === "overlay");
         if (!overlayTrack) {
-          const read = await applyEditOp(projectId, "add_track", {
-            kind: "overlay",
-            name: "Overlays",
-          });
+          const read = await applyEditOp(
+            projectId,
+            "add_track",
+            { kind: "overlay", name: "Overlays" },
+            activeSequence,
+          );
           current = read.edit_project;
           overlayTrack = current.tracks.find((t) => t.kind === "overlay");
         }
         if (!overlayTrack)
           throw new ApiError(0, "No se pudo crear la pista de overlays.");
         const duration = Math.max(1, editProjectDurationS(current) || 5);
-        const read = await applyEditOp(projectId, "add_overlay", {
-          track_id: overlayTrack.id,
-          asset_id: asset.id,
-          start_s: 0,
-          duration_s: duration,
-        });
+        const read = await applyEditOp(
+          projectId,
+          "add_overlay",
+          {
+            track_id: overlayTrack.id,
+            asset_id: asset.id,
+            start_s: 0,
+            duration_s: duration,
+          },
+          activeSequence,
+        );
         setProject(read.edit_project);
       } catch (err) {
         setActionError(
@@ -682,7 +839,7 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         setBusy(false);
       }
     },
-    [project, projectId],
+    [project, projectId, activeSequence],
   );
 
   // --------------------- drag&drop de posición (FEAT-008) --------------------- //
@@ -798,6 +955,38 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
           <h1 className="text-xl font-bold text-neutral-100">Editor de vídeo</h1>
         </div>
         <div className="flex items-center gap-2">
+          {/* Selector de secuencia activa (FEAT-008): variantes del vídeo con historiales
+              undo/redo independientes. Cambiar de secuencia recarga su EditProject. */}
+          <div
+            className="flex items-center gap-1"
+            title="Secuencia activa (variante del vídeo). Cada una tiene su propio historial."
+          >
+            <span className="text-xs text-neutral-500">Secuencia</span>
+            <select
+              value={activeSequence}
+              disabled={busy}
+              onChange={(e) => setActiveSequence(e.target.value)}
+              className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-200 disabled:opacity-50"
+            >
+              {(sequences.length > 0
+                ? sequences
+                : [{ sequence_id: "main", sequence_name: "Principal" } as EditSequence]
+              ).map((s) => (
+                <option key={s.sequence_id} value={s.sequence_id}>
+                  {s.sequence_name || s.sequence_id}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleCreateSequence()}
+              disabled={busy}
+              title="Crear una secuencia nueva duplicando la activa"
+              className="rounded-md bg-neutral-800 px-2 py-1.5 text-sm text-neutral-300 hover:text-neutral-100 disabled:opacity-50"
+            >
+              ＋ Secuencia
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => setSnapEnabled((v) => !v)}
@@ -996,8 +1185,9 @@ export default function EditorWorkspace({ projectId }: { projectId: number }) {
         selectedClipIds={selectedClipIds}
         onSelect={handleSelectClip}
         onRemoveMarker={handleRemoveMarker}
-        busy={busy}
+        busy={busy || mediaDropBusy}
         onOp={runOp}
+        onDropMedia={handleDropMedia}
       />
     </div>
   );
@@ -1347,6 +1537,7 @@ function Timeline({
   onRemoveMarker,
   busy,
   onOp,
+  onDropMedia,
 }: {
   project: EditProject;
   durationS: number;
@@ -1356,8 +1547,32 @@ function Timeline({
   onRemoveMarker: (markerId: string) => void | Promise<void>;
   busy: boolean;
   onOp: (op: string, params: Record<string, unknown>) => void | Promise<void>;
+  onDropMedia: (
+    track: EditTrack,
+    startS: number,
+    file: File,
+  ) => void | Promise<void>;
 }) {
   const scale = durationS > 0 ? 100 / durationS : 0; // % por segundo
+  // Pista que admite importar un medio soltado (el kind del clip debe casar). Las pistas
+  // de subtítulo/título/overlay NO reciben media importada (usan sus propias acciones).
+  const MEDIA_TRACK_KINDS: readonly TrackKind[] = [
+    "video",
+    "image",
+    "voice",
+    "music",
+    "sfx",
+  ];
+  // Estado local de "arrastrando un archivo encima" por pista (resalte visual).
+  const [dragOverTrack, setDragOverTrack] = useState<string | null>(null);
+
+  // Mapea la posición X del drop a un start_s en segundos dentro de la pista.
+  function startSFromDrop(e: React.DragEvent<HTMLDivElement>): number {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (r.width <= 0 || durationS <= 0) return 0;
+    const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    return Math.round(frac * durationS * 1000) / 1000;
+  }
   const tracks = [...project.tracks].sort((a, b) => a.order - b.order);
   const markers: EditMarker[] = project.markers ?? [];
   const selectedSet = new Set(selectedClipIds);
@@ -1413,7 +1628,49 @@ function Timeline({
             <div
               className={`relative h-9 flex-1 overflow-hidden rounded-md border bg-neutral-950 ${
                 track.locked ? "border-amber-500/60" : "border-neutral-800"
-              } ${track.hidden ? "opacity-50" : ""}`}
+              } ${track.hidden ? "opacity-50" : ""} ${
+                dragOverTrack === track.id
+                  ? "ring-2 ring-emerald-400/70"
+                  : ""
+              }`}
+              onDragOver={(e) => {
+                // Solo pistas de media (no locked) aceptan archivos del explorador.
+                if (
+                  track.locked ||
+                  !MEDIA_TRACK_KINDS.includes(track.kind) ||
+                  busy
+                ) {
+                  return;
+                }
+                if (Array.from(e.dataTransfer.types).includes("Files")) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                  if (dragOverTrack !== track.id) setDragOverTrack(track.id);
+                }
+              }}
+              onDragLeave={() => {
+                if (dragOverTrack === track.id) setDragOverTrack(null);
+              }}
+              onDrop={(e) => {
+                setDragOverTrack(null);
+                if (
+                  track.locked ||
+                  !MEDIA_TRACK_KINDS.includes(track.kind) ||
+                  busy
+                ) {
+                  return;
+                }
+                const file = e.dataTransfer.files?.[0];
+                if (!file) return;
+                e.preventDefault();
+                const startS = startSFromDrop(e);
+                void onDropMedia(track, startS, file);
+              }}
+              title={
+                MEDIA_TRACK_KINDS.includes(track.kind) && !track.locked
+                  ? "Suelta aquí un archivo (audio/vídeo/imagen) para importarlo en esta pista"
+                  : undefined
+              }
             >
               {track.clips.map((clip) => {
                 const left = Math.max(0, clip.start_s * scale);

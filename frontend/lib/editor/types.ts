@@ -257,7 +257,21 @@ export interface EditProject {
   // Marcadores de la línea de tiempo. Default [] (regresión: un documento previo sin el
   // campo se trata igual). Metadatos para el snap; no entran en inputProps.
   markers: EditMarker[];
+  // Secuencias múltiples (FEAT-008). Una secuencia es un EditProject independiente
+  // identificado por `sequence_id` (default "main"/"Principal"). Son metadatos de
+  // persistencia (el compilador NO los emite): un documento previo sin estos campos es la
+  // secuencia `main` y su render/inputProps no cambia (regresión, espejo del backend).
+  sequence_id: string;
+  sequence_name: string;
   source_timeline_version: number | null;
+}
+
+// Entrada del catálogo de secuencias (GET .../editor/sequences).
+export interface EditSequence {
+  sequence_id: string;
+  sequence_name: string;
+  duration_s: number;
+  version: number;
 }
 
 // Respuesta de los endpoints del editor (EditProjectRead): el documento completo
