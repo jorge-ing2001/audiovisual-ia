@@ -194,6 +194,35 @@ export function fetchHealth(): Promise<HealthResponse> {
 }
 
 // --------------------------------------------------------------------------- //
+// Ajustes de solo lectura (/settings/image-backends) — FEAT-007 (Bloque 3)
+// --------------------------------------------------------------------------- //
+
+/** Flags NO sensibles de la generación local de imágenes (sin claves/secretos). */
+export interface ImageBackendFlags {
+  sd_local_enabled: boolean;
+  sd_local_url: string;
+  sd_max_concurrency: number;
+}
+
+/** Respuesta de `GET /settings/image-backends` (espejo del router settings.py). */
+export interface ImageBackendsSettings {
+  capability: string;
+  active: string;
+  available: string[];
+  flags: ImageBackendFlags;
+}
+
+/**
+ * Lee del backend los backends de imagen disponibles, el activo y los flags locales
+ * de SD. SOLO LECTURA: la selección global es por variable de entorno
+ * (`AIV_IMAGE_BACKEND`); el override por proyecto vive en `provider_overrides`. El
+ * endpoint nunca devuelve claves/secretos.
+ */
+export function fetchImageBackends(): Promise<ImageBackendsSettings> {
+  return request<ImageBackendsSettings>("/settings/image-backends");
+}
+
+// --------------------------------------------------------------------------- //
 // Proyectos (/projects)
 // --------------------------------------------------------------------------- //
 

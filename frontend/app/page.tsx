@@ -1,5 +1,6 @@
 import Dashboard from "@/components/Dashboard";
 import HealthStatus from "@/components/HealthStatus";
+import ImageBackendsSettings from "@/components/ImageBackendsSettings";
 
 export default function Home() {
   return (
@@ -11,6 +12,7 @@ export default function Home() {
         </p>
       </header>
       <HealthStatus />
+      <ImageBackendsSettings />
       <Dashboard />
     </main>
   );
