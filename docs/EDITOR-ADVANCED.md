@@ -331,8 +331,10 @@ proyecto y obtener un `Asset` del `kind` correcto.
   - vídeo → `.mp4/.mov/.webm/.mkv`, `Asset(kind='video')`.
   - audio → `.mp3/.wav/.m4a/.aac/.ogg/.flac`, mapeado a `kind` según un parámetro `role`
     (`voice`/`music`/`sfx`; default `music`) porque `Asset.kind` ya soporta esos valores.
-- Valida tamaño (`_MAX_UPLOAD_BYTES`, hoy 15 MB; se puede subir para vídeo con una constante
-  propia documentada). Valida contenido: imagen con Pillow (patrón actual); audio/vídeo con
+- Valida tamaño: imagen con `MAX_UPLOAD_BYTES` (15 MB) y audio/vídeo con
+  `MAX_MEDIA_UPLOAD_BYTES` (200 MB, constante propia en `app/storage/uploads.py`, mayor
+  porque un clip de vídeo pesa más). Valida contenido: imagen con Pillow (patrón actual);
+  audio/vídeo con
   **ffprobe** (`AIV_FFPROBE_BIN`) para confirmar que tiene streams válidos y leer
   `duration_s` (que alimenta `source_out_s` del clip). Si ffprobe no está disponible, se
   rechaza con mensaje accionable (no se finge validación).

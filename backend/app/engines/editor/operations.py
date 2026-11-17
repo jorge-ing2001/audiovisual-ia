@@ -90,6 +90,7 @@ __all__ = [
     "op_detach_audio",
     "op_set_speed",
     "op_set_freeze",
+    "op_add_media_clip",
 ]
 
 #: Tipos de pista válidos para ``op_add_track`` (enum completo de ``TrackKind``).
@@ -1093,6 +1094,87 @@ def op_add_overlay(edit_project: EditProject, params: dict) -> EditProject:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# Importar medios: crear un clip desde un Asset subido (FEAT-007)
+# --------------------------------------------------------------------------- #
+
+#: Tipos de clip que admite ``op_add_media_clip`` (media importable: visual + audio).
+_MEDIA_CLIP_KINDS: tuple[TrackKind, ...] = ("video", "image", "voice", "music", "sfx")
+
+
+def op_add_media_clip(edit_project: EditProject, params: dict) -> EditProject:
+    """Coloca un ``Asset`` subido como clip nuevo en una pista (FEAT-007).
+
+    Params: ``track_id`` (pista existente), ``asset_id`` (int, del medio subido),
+    ``start_s`` (>= 0), ``duration_s`` (> 0) y ``kind`` (uno de ``video``/``image``/
+    ``voice``/``music``/``sfx``). Valida que el ``kind`` del clip casa con el ``kind`` de la
+    pista destino (patrón de ``op_add_overlay``/``op_add_title``). Para audio/vídeo con
+    duración de origen conocida fija ``source_out_s`` (opcional ``source_duration_s``; si no
+    se indica, usa ``duration_s``), de modo que recortes/velocidad posteriores conozcan la
+    extensión del origen. Es una operación PURA: la subida/validación del fichero la hace el
+    endpoint ``POST .../editor/media/upload`` (I/O separada de la colocación).
+    """
+    result = _clone(edit_project)
+    track = _require_track(result, _require_str(params, "track_id"))
+    _require_unlocked(track)
+
+    kind = _require_str(params, "kind")
+    if kind not in _MEDIA_CLIP_KINDS:
+        raise EditOperationError(
+            f"add_media_clip: 'kind' debe ser uno de {', '.join(_MEDIA_CLIP_KINDS)}."
+        )
+    if track.kind != kind:
+        raise EditOperationError(
+            f"add_media_clip: no se puede colocar un clip {kind!r} en una pista "
+            f"{track.kind!r} ({track.id!r})."
+        )
+
+    asset_id = params.get("asset_id")
+    if isinstance(asset_id, bool) or not isinstance(asset_id, int):
+        raise EditOperationError("add_media_clip: 'asset_id' (int) es obligatorio.")
+
+    start_s = _require_number(params, "start_s")
+    duration_s = _require_number(params, "duration_s")
+    if start_s < 0:
+        raise EditOperationError("add_media_clip: start_s no puede ser negativo.")
+    if duration_s <= 0:
+        raise EditOperationError("add_media_clip: duration_s debe ser > 0.")
+
+    # Para medios recortables (audio/vídeo) fija el rango del origen. Las imágenes no tienen
+    # extensión temporal de origen (source_out_s queda a None, como en la conversión).
+    source_out_s: float | None = None
+    if kind in ("video", "voice", "music", "sfx"):
+        source_duration = params.get("source_duration_s", duration_s)
+        if isinstance(source_duration, bool) or not isinstance(source_duration, (int, float)):
+            raise EditOperationError("add_media_clip: 'source_duration_s' debe ser numérico.")
+        if source_duration <= 0:
+            raise EditOperationError("add_media_clip: 'source_duration_s' debe ser > 0.")
+        source_out_s = round(float(source_duration), 3)
+
+    base_id = params.get("clip_id")
+    if base_id is not None and not isinstance(base_id, str):
+        raise EditOperationError("add_media_clip: 'clip_id' debe ser str.")
+    clip_id = base_id or f"media_{len(track.clips)}"
+    if result.find_clip(clip_id) is not None:
+        n = len(track.clips) + 1
+        while result.find_clip(f"media_{n}") is not None:
+            n += 1
+        clip_id = f"media_{n}"
+
+    clip = EditClip(
+        id=clip_id,
+        track_id=track.id,
+        kind=kind,
+        start_s=round(start_s, 3),
+        duration_s=round(duration_s, 3),
+        source_in_s=0.0,
+        source_out_s=source_out_s,
+        asset_id=int(asset_id),
+    )
+    track.clips.append(clip)
+    return result
+
+
 _OVERLAY_NUMERIC = {"opacity", "anchor_x", "anchor_y", "width_frac", "rotation"}
 
 
@@ -1849,6 +1931,7 @@ OPERATIONS: dict[str, Callable[[EditProject, dict], EditProject]] = {
     "detach_audio": op_detach_audio,
     "set_speed": op_set_speed,
     "set_freeze": op_set_freeze,
+    "add_media_clip": op_add_media_clip,
 }
 
 
