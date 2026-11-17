@@ -1,0 +1,33 @@
+{
+  "project_type": "Monorepo prompt->video local/gratuito: backend FastAPI + Python, frontend Next.js (App Router) + TS + Tailwind, composicion/render Remotion + FFmpeg. Corre en el PC del usuario (RTX 3050 4GB).",
+  "language": "Python 3.11 (backend) + TypeScript/React 19 (frontend/remotion)",
+  "build_system": "backend: venv en backend/.venv + pip (pyproject.toml, extras [dev]/[voice]); frontend: npm (Next 15). No hay Docker. FFmpeg estatico en /projects/sandbox/.localbin (fuera del PATH).",
+  "test_framework": "backend: pytest en backend/tests/ con conftest.py (fixtures temp_env/client/db_ready, BD SQLite temporal + AIV_MEDIA_ROOT temporal). frontend: node --test tests/*.test.mjs.",
+  "build_command": "frontend: cd frontend && npm run build (solo si se toca UI). backend: no compila (Python).",
+  "test_command": "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+  "verification_instructions": "1) Backend: activar backend/.venv y correr pytest con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN apuntando a /projects/sandbox/.localbin (baseline esperado ~456 passed / 3 skipped con ffmpeg). 2) Si se toca UI (frontend): cd frontend && npm run lint && npm run typecheck && npm run build. 3) Los tests de ComfyUI son 100% mockeados (httpx) + logica pura; NUNCA requieren ComfyUI/GPU reales.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "El venv backend/.venv ya existe con fastapi/httpx/pillow/pydantic/sqlalchemy. Activar con '. backend/.venv/bin/activate'. Si falta algo del tier dev: pip install -e 'backend[dev]'. No instalar ComfyUI (no procede en el sandbox).",
+  "environment_constraints": "Red: solo repos conectados (sin registries externos garantizados). ComfyUI NO esta instalado y NO hay GPU en el sandbox: el ComfyUIImageProvider se prueba SOLO con httpx mockeado + logica pura + degradacion a placeholder. $HOME y gestor de paquetes del sistema de solo lectura. FFmpeg/ffprobe en /projects/sandbox/.localbin (pasar via AIV_FFMPEG_BIN/AIV_FFPROBE_BIN).",
+  "contribution_requirements": "Conservar TODOS los modulos y la arquitectura; no simplificar; nada decorativo. Mantener intactos stock/placeholder y la via de pago (stubs stability/openai). Cada funcion real y conectada al backend. Nada simulado presentado como real: en degradacion el Asset es provider='placeholder', nunca 'sd_local'. Primer feature = baseline verde. Verificacion real por feature.",
+  "key_patterns": "Providers implementan Protocol de app/providers/base.py y se registran en registry._register_builtin_providers() con register(cap,name,factory). StockImageProvider es el patron: httpx para red, fallback a PlaceholderProvider, ImageAsset con meta. Tests de red mockean app.providers.image.<mod>.httpx (ver test_stock_provider.py). Logica pura se testea aparte (ver test_mapping.py). Settings nuevos con prefijo AIV_ en config.py Settings + doc en .env.example. VisualEngine.render_scene_image ya cachea por hash (visual_prompt,aspect,backend,seed) incluyendo backend. El pipeline (jobs/pipeline.py) orquesta guion->imagen/voz->audio->subtitulos->timeline->render.",
+  "relevant_files": [
+    "backend/app/providers/base.py",
+    "backend/app/providers/registry.py",
+    "backend/app/providers/image/stock.py",
+    "backend/app/providers/image/placeholder.py",
+    "backend/app/providers/image/aspect.py",
+    "backend/app/providers/image/comfyui.py (NUEVO)",
+    "backend/app/providers/llm/ollama.py",
+    "backend/app/engines/visual2d/engine.py",
+    "backend/app/jobs/pipeline.py",
+    "backend/app/api/generation.py",
+    "backend/app/config.py",
+    ".env.example",
+    "backend/tests/test_stock_provider.py",
+    "backend/tests/test_visual_engine_cache.py",
+    "backend/tests/conftest.py",
+    "docs/MOTOR-COMFYUI.md"
+  ],
+  "directory_structure": "backend/app/providers/{base.py,registry.py,fakes.py,image/,llm/,tts/,asr/,clip/}; backend/app/engines/{visual2d,script,voice,render,engine3d}; backend/app/jobs/{pipeline.py,handlers.py,queue.py,worker.py}; backend/app/api/{generation.py,editor.py,...}; backend/tests/ (pytest por modulo + conftest.py); frontend/ (Next.js App Router); remotion/ (composiciones); docs/ (disenos)."
+}

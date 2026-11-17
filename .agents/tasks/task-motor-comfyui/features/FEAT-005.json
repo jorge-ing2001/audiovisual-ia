@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "description": "Gestion de VRAM secuencial: anadir OllamaLLM.unload() (keep_alive=0, tolerante) y el paso EXPLICITO y CONDICIONAL de liberar VRAM de Ollama en jobs/pipeline.py entre la etapa de guion y la de imagenes. Solo activo cuando LLM=ollama e imagen=sd_local (y AIV_OLLAMA_UNLOAD_BETWEEN_STAGES=true); el modo por defecto (stock/placeholder) NO cambia.",
+  "status": "pending",
+  "steps": [
+    "En backend/app/providers/llm/ollama.py anadir el metodo unload(self): POST {self.url}/api/generate con body {'model': self.model, 'keep_alive': 0} usando httpx con un timeout corto. Hacerlo TOLERANTE: capturar httpx.HTTPError/ConnectError/TimeoutException y cualquier excepcion -> log (info) 'Ollama no disponible para unload; no-op' y return sin lanzar. Idempotente.",
+    "En backend/app/jobs/pipeline.py anadir una funcion _should_unload_ollama_before_images(project)->bool que devuelva True solo si: get_settings().ollama_unload_between_stages es True Y registry.active_backend('llm', project.provider_overrides)=='ollama' Y registry.active_backend('image', project.provider_overrides)=='sd_local'. Anadir _release_llm_vram(project) que construya OllamaLLM(...) (respetando overrides si aplica) y llame a .unload() de forma tolerante.",
+    "En generate_video_handler, entre _ensure_script(...) (paso 1 guion) y _generate_scene_assets(...) (paso 2 imagen/voz), insertar: if _should_unload_ollama_before_images(project): _release_llm_vram(project). Opcional: reflejarlo en el progreso/detail del Job (p. ej. un detail 'VRAM de Ollama liberada' en el paso de escenas) sin romper los tramos de progreso existentes. NO alterar el comportamiento cuando la condicion es falsa (modo por defecto).",
+    "Tests: backend/tests/test_ollama_unload.py con httpx mockeado verifica que unload() hace POST /api/generate con keep_alive:0, y que si httpx lanza ConnectError unload() es no-op sin excepcion. backend/tests/test_pipeline_vram.py verifica, con un spy/monkeypatch sobre _release_llm_vram (o sobre OllamaLLM.unload), que: (a) con image_backend='sd_local' y llm_backend='ollama' el unload se invoca UNA vez entre guion e imagenes; (b) con el backend de imagen por defecto ('stock') el unload NO se invoca. Reutilizar el patron de tests del pipeline existentes (script_fixture etiquetado para evitar Ollama real; provider de imagen fake/mockeado para no necesitar ComfyUI)."
+  ],
+  "acceptance_criteria": [
+    "OllamaLLM.unload() hace POST /api/generate con keep_alive:0 y es tolerante (no-op con log si Ollama no responde).",
+    "El pipeline libera la VRAM de Ollama exactamente una vez entre guion e imagenes SOLO cuando LLM=ollama e imagen=sd_local y el flag esta activo.",
+    "Con el backend de imagen por defecto (stock/placeholder) el pipeline no llama al unload y se comporta igual que antes (sin llamadas extra).",
+    "test_ollama_unload.py y test_pipeline_vram.py pasan; la suite completa sigue verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/test_ollama_unload.py backend/tests/test_pipeline_vram.py",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

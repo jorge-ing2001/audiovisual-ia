@@ -1,0 +1,7 @@
+{
+  "task_id": "task-motor-comfyui",
+  "task_description": "BLOQUE 3 — Motor ComfyUI (imagenes IA locales). Anadir ComfyUIImageProvider como backend conmutable del proveedor de imagenes (registry 'sd_local', AIV_IMAGE_BACKEND=sd_local), implementando el Protocol ImageProvider: construccion del workflow JSON SD1.5 parametrizado (o plantilla configurable), envio a POST /prompt, polling de /history, descarga de /view, PNG en workspace e ImageAsset; con degradacion a placeholder si ComfyUI no responde. Mas gestion de VRAM secuencial: liberar la VRAM de Ollama entre la etapa de guion y la de imagenes en el pipeline (condicional, solo con LLM=ollama e imagen=sd_local). OFF por defecto; no rompe stock/placeholder, la via de pago ni el pipeline 2D/3D. Testeable en el sandbox sin ComfyUI ni GPU (httpx mockeado + logica pura). Diseno en docs/MOTOR-COMFYUI.md.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005", "FEAT-006"],
+  "blocked_reason": null
+}

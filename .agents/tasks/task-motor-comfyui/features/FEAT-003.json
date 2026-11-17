@@ -1,0 +1,23 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Completar ComfyUIImageProvider.image_for: envio a POST /prompt, polling de GET /history/{prompt_id}, descarga de GET /view, escritura del PNG y creacion del ImageAsset(provider='sd_local'); mas la DEGRADACION a placeholder ante cualquier fallo o enabled=false. Todo testeable con httpx mockeado (sin ComfyUI real).",
+  "status": "pending",
+  "steps": [
+    "En backend/app/providers/image/comfyui.py implementar los metodos privados usando httpx a self.url (patron de stock.py): _submit(graph)->prompt_id (POST {url}/prompt con body {'prompt':graph,'client_id':<uuid>}; si la respuesta trae 'error'/'node_errors' lanzar para degradar); _poll_history(prompt_id)->list[dict] (GET {url}/history/{prompt_id} en bucle con sd_poll_interval_s hasta que aparezca outputs con 'images' o se exceda sd_timeout_s); _download(image_ref, out_dir)->Path (GET {url}/view con params filename/subfolder/type='output', escribir bytes a disco); opcional _free_vram() (POST {url}/free con {'unload_models':true,'free_memory':true}) si sd_free_after.",
+    "Implementar image_for(query, *, aspect, out_dir, seed): si no enabled o url vacia -> logger.warning + self._fallback.image_for(...). Si enabled: construir width/height con base_size_for_aspect, construir el grafo con build_workflow (usando los settings del provider y sd_workflow_path), _submit -> _poll_history -> _download; crear ImageAsset(path, width, height, provider='sd_local', query, seed, meta={source:'sd_local', backend_engine:'comfyui', checkpoint, sampler, scheduler, steps, cfg, seed, gen_width, gen_height, aspect, license:'depende-del-checkpoint'}); si sd_free_after, _free_vram() tolerante. CAPTURAR httpx.HTTPError/ConnectError/TimeoutException/ValueError/OSError y cualquier fallo del flujo -> logger.warning accionable (que fallo + la url) y degradar a self._fallback. El ImageAsset de degradacion conserva provider='placeholder' (nunca 'sd_local').",
+    "Anadir tests en backend/tests/test_comfyui_provider.py siguiendo EXACTAMENTE el patron de test_stock_provider.py: monkeypatch de app.providers.image.comfyui.httpx para simular POST /prompt (devuelve prompt_id), GET /history/{id} (devuelve outputs con una imagen) y GET /view (devuelve bytes PNG no vacios); afirmar provider=='sd_local', fichero PNG en disco no vacio, meta con checkpoint/seed/steps. Casos de degradacion: enabled=false -> provider=='placeholder'; ConnectError en /prompt -> placeholder; /history sin outputs tras timeout corto (inyectar sd_timeout_s pequeno) -> placeholder; respuesta /prompt con node_errors -> placeholder. Ninguna llamada de red real."
+  ],
+  "acceptance_criteria": [
+    "Con httpx mockeado, image_for devuelve un ImageAsset provider='sd_local' con un PNG real en disco y meta completa.",
+    "Con sd_local deshabilitado o ComfyUI inaccesible (ConnectError/timeout/node_errors/sin outputs), image_for degrada a placeholder (provider='placeholder') con log claro y nunca lanza.",
+    "No se realiza ninguna llamada HTTP real en los tests.",
+    "backend/tests/test_comfyui_provider.py pasa."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/test_comfyui_provider.py",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

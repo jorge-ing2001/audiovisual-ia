@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Registrar ComfyUIImageProvider en el registry bajo 'sd_local' e integrarlo en el flujo existente (VisualEngine + API de regenerar imagen de escena) SIN tocar stock/placeholder ni la via de pago. Confirmar que seleccionar AIV_IMAGE_BACKEND=sd_local funciona end-to-end con el provider (mockeado).",
+  "status": "pending",
+  "steps": [
+    "En backend/app/providers/registry.py, dentro de _register_builtin_providers(), anadir el import de ComfyUIImageProvider y la linea register('image','sd_local', ComfyUIImageProvider), junto a los register de 'stock'/'placeholder'. NO modificar ni reordenar los registros existentes; NO tocar los stubs de pago.",
+    "Verificar (sin cambiar codigo salvo que haga falta) que VisualEngine.render_scene_image resuelve correctamente el backend 'sd_local' via active_backend('image', overrides) y que el backend 'sd_local' ya entra en el cache_key (hash incluye backend). No se requiere cambio en engine.py; si se detecta algo, documentarlo en findings.",
+    "Anadir un test de integracion en backend/tests/test_visual_engine_sd_local.py que: registre un ComfyUIImageProvider con httpx mockeado (o un fake que devuelva un ImageAsset provider='sd_local'), ponga AIV_IMAGE_BACKEND='sd_local' (monkeypatch.setenv + reset de config._settings, patron de test_visual_engine_cache.py), cree Project+Scene y llame a VisualEngine().render_scene_image, afirmando que el Asset.provider refleja la realidad y que la cache por hash con backend='sd_local' funciona (segunda llamada reutiliza).",
+    "Anadir un test que confirme la NO regresion: con AIV_IMAGE_BACKEND por defecto ('stock'), el registry y el VisualEngine siguen comportandose como antes (el registro de sd_local no afecta a stock/placeholder)."
+  ],
+  "acceptance_criteria": [
+    "registry.resolve('image') con AIV_IMAGE_BACKEND=sd_local construye un ComfyUIImageProvider; con el default 'stock' sigue construyendo StockImageProvider.",
+    "VisualEngine.render_scene_image produce un Asset usando el provider sd_local (mockeado) y respeta la cache por hash (incluye backend).",
+    "stock, placeholder y los stubs de pago (stability/openai) permanecen registrados e intactos.",
+    "Los nuevos tests pasan y la suite completa sigue verde."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q backend/tests/test_visual_engine_sd_local.py backend/tests/test_registry.py",
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

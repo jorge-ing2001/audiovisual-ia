@@ -1,0 +1,23 @@
+{
+  "id": "FEAT-006",
+  "type": "feat",
+  "description": "OPCIONAL (independiente): exponer la seleccion del backend de imagenes de forma real. Endpoint backend de solo lectura que lista los backends de imagen disponibles y el activo, y una pieza minima de UI de ajustes en el frontend que lo consume. No es imprescindible para el motor ComfyUI (funciona por env var); si el tiempo es limitado, puede diferirse. Si se implementa, debe ser real y conectada al backend, sin controles decorativos.",
+  "status": "pending",
+  "steps": [
+    "Backend: anadir un endpoint GET (p. ej. en un router nuevo app/api/settings.py o dentro de generation.py) que devuelva los backends de imagen registrados (list(registry.PROVIDERS['image'])) y el activo (registry.active_backend('image')), mas los flags relevantes (sd_local_enabled, sd_local_url) SIN exponer ninguna clave/secreto. Registrar el router en app/main.py si se crea uno nuevo. Test backend con TestClient (fixture client de conftest.py) que afirme que 'sd_local' aparece entre los disponibles y que el activo por defecto es 'stock'.",
+    "Frontend (solo si se aborda): anadir una vista/seccion de ajustes en frontend/app que haga fetch al endpoint y muestre el backend de imagen activo y la lista de disponibles (lectura real del backend, no hardcodeada). Mantener el estilo Tailwind existente. Si se permite cambiar el activo, hacerlo real (endpoint que ajuste el override por proyecto o documentar que la seleccion global es por env var); NO mostrar un selector decorativo sin efecto.",
+    "Verificar frontend si se toco UI: cd frontend && npm run lint && npm run typecheck && npm run build."
+  ],
+  "acceptance_criteria": [
+    "GET del endpoint devuelve 'sd_local' entre los backends de imagen disponibles y el activo correcto, sin exponer secretos.",
+    "El test backend del endpoint pasa (TestClient).",
+    "Si se toco UI: npm run lint, typecheck y build pasan, y la UI lee los datos reales del backend (no hardcodeados).",
+    "Si se difiere la parte de UI, queda registrado en findings y el motor ComfyUI sigue siendo utilizable por variable de entorno."
+  ],
+  "verification": [
+    "cd backend && . .venv/bin/activate && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe pytest -q",
+    "cd frontend && npm run lint && npm run typecheck && npm run build"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
