@@ -1,24 +1,28 @@
 {
   "id": "FEAT-006",
   "type": "feat",
-  "description": "Edicion inteligente honesta (determinista): exponer el auto-corte por silencios ya implementado en engines/voice/trim.py como accion puntual del editor (operacion que recorta un clip de audio de voz y re-mapea sus cues de subtitulos, con Version para undo/redo) y/o endpoint de analisis de silencios; mas 'sugerencias' deterministas (escenas sin imagen, subtitulos que exceden la duracion, clips solapados) expuestas por GET /projects/{id}/suggestions. Nada de 'IA magica'.",
+  "description": "Edicion inteligente honesta (determinista): exponer el auto-corte por silencios ya implementado en engines/voice/trim.py como accion puntual del editor, REVERSIBLE y NO DESTRUCTIVA -> crea una NUEVA Version del EditProject (undo/redo via engines/editor/store.py), PRESERVA los tiempos y REFERENCIAS de subtitulos re-mapeando los cues con la logica pura ya existente (SilenceTrimmer.remap_timings/speech_segments), y permite REVERTIR la operacion con el undo del editor. Mas 'sugerencias' deterministas (escenas sin imagen, subtitulos que exceden la duracion, clips solapados) expuestas por GET /projects/{id}/suggestions. Nada de 'IA magica'.",
   "status": "pending",
   "steps": [
-    "Auto-corte por silencios como operacion del editor: anadir una operacion al dict OPERATIONS de backend/app/engines/editor/operations.py que, dado un clip de audio (voz), use SilenceTrimmer para detectar/recortar silencios y ajustar source_in/out/duracion del clip; si el clip tiene subtitulos asociados, re-mapear sus cues con la logica pura ya existente (SilenceTrimmer.remap_timings/speech_segments). La operacion crea una Version (undo/redo) como el resto. Exponer via el dispatch existente POST /projects/{id}/editor/op.",
+    "Auto-corte por silencios como operacion del editor: anadir una operacion al dict OPERATIONS de backend/app/engines/editor/operations.py que, dado un clip de audio (voz), use SilenceTrimmer para detectar/recortar silencios y ajustar source_in/out/duracion del clip. Exponer via el dispatch existente POST /projects/{id}/editor/op.",
+    "Version y reversibilidad: la operacion persiste el nuevo EditProject con save_edit_project (engines/editor/store.py), creando una nueva Version (snapshot) igual que el resto de operaciones del editor, de modo que store.undo restaura el estado anterior (clip y cues originales). La operacion es NO destructiva: no sobrescribe el estado previo, lo deja en el historial.",
+    "Preservacion de subtitulos: si el clip tiene subtitulos asociados, re-mapear sus cues al nuevo eje temporal con la logica pura ya existente (SilenceTrimmer.remap_timings a partir de speech_segments), de modo que voz y subtitulos no se desalineen tras el corte. No perder referencias de los cues.",
     "Opcional pero recomendado: endpoint GET /projects/{id}/editor/silences (o incluir en el analisis) que devuelve los tramos de silencio detectados (parse_silencedetect) para preview en la UI; la deteccion real usa ffmpeg (skip razonado en tests si no esta).",
-    "Sugerencias deterministas: nuevo modulo backend/app/engines/qa/suggestions.py (o en engines/qa) con funciones PURAS sobre el estado del proyecto/EditProject que devuelven avisos {id,label,status,detail} del mismo shape que los checks: escenas sin Asset(kind='image'); cues de subtitulos cuyo end_s excede la duracion de su escena/clip; clips solapados en una pista que no deberia solaparse; (opcional) duration_s <= 0, proyecto sin voz.",
+    "Sugerencias deterministas: nuevo modulo backend/app/engines/qa/suggestions.py con funciones PURAS sobre el estado del proyecto/EditProject que devuelven avisos {id,label,status,detail} del mismo shape que los checks: escenas sin Asset(kind='image'); cues de subtitulos cuyo end_s excede la duracion de su escena/clip; clips solapados en una pista que no deberia solaparse; (opcional) duration_s <= 0, proyecto sin voz.",
     "Endpoint GET /projects/{id}/suggestions que ejecuta las sugerencias sobre la BD/EditProject y devuelve la lista. Al ser puro, es testeable sin ffmpeg.",
-    "Frontend (opcional, minimo): mostrar las sugerencias en el panel de QA (seccion 'Sugerencias') reutilizando el mismo render de checks de FEAT-005, y/o un boton 'Quitar silencios' en el editor que llame a la operacion. Mantener build/lint verdes.",
-    "Tests (backend/tests/): test_suggestions.py con la logica pura (estados de proyecto -> avisos esperados) sin ffmpeg; test de la operacion de auto-corte por silencios reutilizando el patron de test_silence_trim.py (tramos y re-mapeo puros; la parte ffmpeg con skip razonado)."
+    "Frontend (opcional, minimo): mostrar las sugerencias en el panel de QA (seccion 'Sugerencias') reutilizando el render de checks de FEAT-005, y/o un boton 'Quitar silencios' en el editor que llame a la operacion. Mantener build/lint verdes.",
+    "Tests (backend/tests/): test_suggestions.py con la logica pura (estados de proyecto -> avisos esperados) sin ffmpeg; test_editor_silence_op.py (o ampliar test_silence_trim.py) para la operacion de auto-corte: tras aplicarla se CREA una nueva Version, los cues de subtitulos quedan re-mapeados (tiempos preservados coherentes con remap_timings), y store.undo REVIERTE la operacion devolviendo el EditProject anterior (clip y cues originales). La parte que invoca ffmpeg (deteccion real de silencios) se salta con razon si no esta; el re-mapeo/tramos (logica pura) se testea sin ffmpeg."
   ],
   "acceptance_criteria": [
-    "El auto-corte por silencios esta disponible como operacion real del editor (POST .../editor/op), recorta el clip y re-mapea sus cues, y genera una Version (undo/redo).",
-    "GET /projects/{id}/suggestions devuelve avisos deterministas correctos (escenas sin imagen, subtitulos fuera de duracion, clips solapados) verificados por tests puros.",
+    "El auto-corte por silencios esta disponible como operacion real del editor (POST .../editor/op), recorta el clip y, cuando hay subtitulos, re-mapea sus cues preservando los tiempos (SilenceTrimmer.remap_timings).",
+    "La operacion crea una NUEVA Version del EditProject (undo/redo) y es REVERSIBLE: store.undo restaura el estado anterior (clip y cues originales); la operacion no es destructiva.",
+    "GET /projects/{id}/suggestions devuelve avisos deterministas correctos (escenas sin imagen, subtitulos fuera de duracion, clips solapados) verificados por tests puros sin ffmpeg.",
     "Ningun componente promete resultados 'magicos'; todo es determinista y verificable.",
-    "pytest del backend en verde (baseline mantenido) y, si se toca frontend, build/lint sin errores."
+    "pytest del backend en verde (baseline mantenido), incluidos el test de Version+reversibilidad del auto-corte y el de re-mapeo de cues; si se toca frontend, build/lint sin errores."
   ],
   "verification": [
-    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q tests/test_suggestions.py tests/test_silence_trim.py",
+    "cd backend && .venv/bin/pytest -q tests/test_suggestions.py",
+    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q tests/test_suggestions.py tests/test_silence_trim.py tests/test_editor_silence_op.py",
     "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q",
     "cd frontend && npm run build"
   ],
