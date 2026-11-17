@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "description": "Control de Calidad (backend): nuevo paquete engines/qa con mediciones REALES (ffprobe/ffmpeg) y evaluacion PURA de checks (loudness -14 LUFS, frames negros via blackdetect, coherencia de duracion suma-de-escenas/EditProject vs MP4, resolucion/aspect correctos, subtitulos dentro de la duracion). El QA report (pass/warn/fail por check + overall) se genera tras el render, se persiste en Asset.meta.qa_report del Asset(kind='video') y se expone por GET /projects/{id}/render/qa.",
+  "status": "pending",
+  "steps": [
+    "Crear backend/app/engines/qa/__init__.py, checks.py (EVALUACION PURA) y measure.py (MEDICION ffprobe/ffmpeg) y report.py (orquesta).",
+    "measure.py: reutilizar patrones existentes -> loudness con engines/voice/master.VoiceMaster.measure_integrated/parse_integrated_lufs; duracion y width/height con storage/uploads.probe_media; frames negros con ffmpeg 'blackdetect=d=...:pic_th=...' sobre el MP4 parseando black_start/black_end del stderr (patron de parse_silencedetect en trim.py). Invocar binarios via settings.ffmpeg_bin/ffprobe_bin (AIV_FFMPEG_BIN/AIV_FFPROBE_BIN). Si faltan binarios, propagar un error claro (NO fingir medicion).",
+    "checks.py: funciones puras que, dadas las mediciones + metadatos (Project.aspect_ratio/resolution, suma de Scene.duration_s o EditProject.duration_s, cues de subtitulos), devuelven cada check {id,label,status,detail,measured} y el overall (peor estado). Definir umbrales como constantes documentadas (loudness +-1/+-2 LU; black_min_s; tolerancia de duracion; etc.), configurables por AIV_QA_* donde aplique.",
+    "report.py: build_qa_report(project, video_asset, session) que mide sobre el MP4 del Asset y evalua; devuelve el dict del reporte (shape del doc §2.3). Manejar ausencia de audio/subtitulos con el estado adecuado sin romper.",
+    "Persistencia: tras el render, escribir el reporte en Asset.meta['qa_report'] del Asset(kind='video'). Integrar en backend/app/jobs/handlers.py (render_handler y edit_export_handler) como paso posterior al render; si el render no esta disponible o la medicion falla, NO inventar el reporte (omitir/marcar motivo).",
+    "Endpoint: GET /projects/{id}/render/qa en app/api/render.py que devuelve el qa_report del ultimo Asset(kind='video') (404 si no hay render; mensaje claro si existe pero no hay reporte). Opcional POST .../render/qa para recomputar sobre el MP4 existente.",
+    "Tests (backend/tests/): test_qa_checks.py con la EVALUACION PURA (tablas de mediciones -> veredicto esperado para cada check y overall) 100% sin ffmpeg; test_qa_measure.py que genera un MP4 con lavfi (p. ej. negro al inicio + tono) y verifica blackdetect/duracion/resolucion/loudness reales, con skip razonado si ffmpeg/ffprobe no estan; test del endpoint GET .../render/qa."
+  ],
+  "acceptance_criteria": [
+    "engines/qa evalua los 5 checks (loudness, black_frames, duration_match, resolution_aspect, subtitle_sync) con pass/warn/fail + detalle, y overall = peor estado.",
+    "El QA report se persiste en Asset.meta.qa_report del render y GET /projects/{id}/render/qa lo devuelve (404 si no hay render).",
+    "La evaluacion pura esta cubierta por tests sin ffmpeg; las mediciones reales por tests con MP4 lavfi que se saltan con razon si faltan binarios (nunca simulan).",
+    "No se modifica compose/compose_edit de forma que altere su salida; el QA corre DESPUES del render.",
+    "pytest del backend en verde (baseline mantenido) con los nuevos tests."
+  ],
+  "verification": [
+    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q tests/test_qa_checks.py tests/test_qa_measure.py",
+    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

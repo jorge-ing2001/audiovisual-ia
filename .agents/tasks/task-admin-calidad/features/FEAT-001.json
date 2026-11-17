@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Baseline verde: preparar/activar el entorno de backend (venv Python 3.11) y frontend (npm), correr la suite existente con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN apuntando a /projects/sandbox/.localbin y confirmar el baseline antes de tocar nada (527 passed / 3 skipped con ffmpeg). No cambia codigo de produccion.",
+  "status": "pending",
+  "steps": [
+    "Activar/verificar el venv del backend en backend/.venv (Python 3.11.15). Si faltan dependencias de test, instalarlas en el venv (NO en el sistema ni en $HOME, que son de solo lectura).",
+    "Ejecutar: cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q y registrar el conteo exacto (passed/skipped).",
+    "Verificar el frontend: cd frontend && npm ci (si node_modules no esta) && npm run lint && npm run build (o el script de typecheck disponible: revisar package.json scripts).",
+    "Anotar en 'findings' el conteo real de pytest y el resultado del build/lint, para comparar tras cada feature posterior."
+  ],
+  "acceptance_criteria": [
+    "pytest del backend con AIV_FFMPEG_BIN/AIV_FFPROBE_BIN termina en verde con el baseline esperado (527 passed / 3 skipped con ffmpeg; si difiere, registrar el numero real como baseline).",
+    "frontend: npm run build y npm run lint terminan sin errores.",
+    "No se modifica ningun fichero de codigo de produccion en este feature."
+  ],
+  "verification": [
+    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q",
+    "cd frontend && npm run build",
+    "cd frontend && npm run lint"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

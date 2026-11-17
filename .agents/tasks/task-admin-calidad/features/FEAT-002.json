@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Administracion de proyectos (backend): duplicar proyecto con copia profunda de scenes/assets/timelines y copia de los ficheros de media al workspace del nuevo proyecto (reescribiendo Asset.path y rutas en timeline/EditProject); campos folder y tags en Project (con migracion idempotente en SQLite); busqueda/filtrado en GET /projects (q/tag/folder); borrado de proyecto con limpieza SEGURA del workspace de media. Mantener compatibilidad de los endpoints existentes.",
+  "status": "pending",
+  "steps": [
+    "Modelo (backend/app/models/entities.py): anadir a Project 'folder: Mapped[str | None]' (default None) y 'tags: Mapped[list | None]' persistido como columna JSON (default list via default=None y normalizar a [] en lectura). No romper columnas existentes.",
+    "Migracion idempotente: en el arranque/init_db (backend/app/storage/db.py) anadir, solo para SQLite, un ALTER TABLE ADD COLUMN idempotente que compruebe con PRAGMA table_info('projects') si faltan 'folder'/'tags' y las anada. Debe ser no-op si ya existen y no perder datos.",
+    "Esquemas (backend/app/models/schemas.py): anadir 'folder: str | None = None' y 'tags: list[str] = []' a ProjectCreate/ProjectUpdate/ProjectRead con defaults compatibles.",
+    "Duplicado (nuevo modulo backend/app/engines/admin/duplicate.py o funcion en app/api/projects.py): funcion PURA 'build_duplication_plan' que, dado el Project origen y sus hijos, devuelve el mapa de filas a crear y el mapa de rutas origen->destino (sin tocar disco). Funcion de E/S que ejecuta el plan: crea el Project nuevo (name '<name> (copia)' si no se pasa), ensure_project_workspace, copia ficheros con shutil.copy2, crea Scene/Asset/Timeline/Script re-mapeando scene_id y reescribiendo Asset.path y las rutas base project_{old}->project_{new} en los timelines/EditProject. NO copiar Job.",
+    "Endpoint POST /projects/{id}/duplicate en app/api/projects.py: body opcional {name}. Modo sincrono si el proyecto es pequeno (umbral por nº de assets o tamano, documentado/configurable); si es grande, encolar job type='duplicate_project' (registrar handler nuevo en backend/app/jobs/handlers.py) y devolver el Job para polling (como render).",
+    "Busqueda/filtrado: ampliar GET /projects con query params opcionales q (substring case-insensitive sobre name y prompt), tag (coincidencia en tags), folder (igualdad). Sin params devuelve todo como hoy (regresion). Opcional: GET /projects/tags y GET /projects/folders para poblar filtros.",
+    "PATCH /projects/{id}: aceptar folder y tags (ya hay setattr generico; validar que tags es lista de strings).",
+    "Borrado seguro: ampliar DELETE /projects/{id} para resolver project_dir(id), verificar que .resolve() esta DENTRO de media_root().resolve() y solo entonces shutil.rmtree capturando errores sin dejar la BD inconsistente. La cascada ORM ya borra filas hijas.",
+    "Montar cualquier router nuevo en backend/app/main.py si se separa (preferible ampliar projects.py para no cambiar el montaje).",
+    "Tests (backend/tests/): test_project_admin.py con (a) lógica pura del plan de duplicacion (re-mapeo de scene_id y rutas) sin disco; (b) API: duplicar un proyecto con escenas+assets (crear ficheros reales en un workspace temporal via temp_env) y verificar que el nuevo proyecto tiene copias independientes con paths dentro de su workspace; (c) filtros q/tag/folder; (d) borrado que elimina filas y el directorio del workspace; (e) migracion idempotente sobre BD sin las columnas."
+  ],
+  "acceptance_criteria": [
+    "POST /projects/{id}/duplicate crea un proyecto nuevo con copias independientes de scenes/assets/timelines y ficheros de media copiados a su propio workspace; los Asset.path del nuevo apuntan dentro de project_{new} y existen en disco.",
+    "Project tiene folder y tags; PATCH los actualiza; GET /projects?q=&tag=&folder= filtra correctamente y sin params devuelve todo (regresion).",
+    "DELETE /projects/{id} borra filas (cascada) y el directorio del workspace, con verificacion de contencion dentro de media_root (no borra fuera de sitio).",
+    "La migracion idempotente anade folder/tags en una BD preexistente sin perder datos y es no-op si ya existen.",
+    "pytest del backend sigue en verde (baseline mantenido) incluidos los nuevos tests."
+  ],
+  "verification": [
+    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q tests/test_project_admin.py",
+    "cd backend && AIV_FFMPEG_BIN=/projects/sandbox/.localbin/ffmpeg AIV_FFPROBE_BIN=/projects/sandbox/.localbin/ffprobe .venv/bin/pytest -q"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
