@@ -548,6 +548,78 @@ export function videoDownloadUrl(projectId: number): string {
 }
 
 // --------------------------------------------------------------------------- //
+// Control de calidad del render (/projects/{id}/render/qa) — FEAT-004/005
+// --------------------------------------------------------------------------- //
+
+/** Estado de un check individual del QA report (espejo de engines/qa/checks.py §2.1). */
+export type QACheckStatus = "pass" | "warn" | "fail" | "skipped";
+
+/**
+ * Veredicto global del reporte (espejo de `compute_overall`, §2.3).
+ *
+ * `pass_with_skips` es DISTINTO de `pass`: significa "lo evaluado pasó, pero el reporte
+ * está incompleto" (algún check quedó `skipped`). La UI lo muestra con etiqueta/tono
+ * propios, nunca igual que `pass`.
+ */
+export type QAOverall = "pass" | "warn" | "fail" | "pass_with_skips";
+
+/** Un control del QA report (shape de `engines/qa/checks.py::_check`). */
+export interface QACheck {
+  id: string;
+  label: string;
+  status: QACheckStatus;
+  detail: string;
+  measured?: unknown;
+  threshold?: Record<string, unknown>;
+  /** Razón cuando `status === "skipped"` (p. ej. `ffmpeg_unavailable`, `no_subtitles`). */
+  skip_reason?: string;
+}
+
+/** Reporte de calidad del render (espejo de `engines/qa/report.py::build_qa_report`). */
+export interface QAReport {
+  schema?: string;
+  qa_engine_version?: string;
+  project_id: number;
+  asset_id: number;
+  video_path?: string | null;
+  render_hash?: string | null;
+  generated_at: string;
+  overall: QAOverall;
+  thresholds?: Record<string, unknown>;
+  checks: QACheck[];
+  skipped_checks?: Array<{ id: string; skip_reason?: string | null }>;
+}
+
+/**
+ * Resultado de `GET /projects/{id}/render/qa` (espejo de `render.py::get_render_qa`).
+ *
+ * El backend aplica la REGLA DE FRESCURA (§2.7): puede devolver el `report` asociado al
+ * último render (`status: "ok"`, con `stale` indicando si el MP4 cambió desde la
+ * evaluación), o `status: "no_report"` cuando el último render no tiene reporte asociado.
+ * El 404 (proyecto sin ningún render) lo traduce `fetchRenderQA` a `null`.
+ */
+export type RenderQAResult =
+  | { status: "ok"; stale: boolean; report: QAReport }
+  | { status: "no_report"; asset_id: number; detail: string };
+
+/**
+ * Carga el QA report del último render (GET /projects/{id}/render/qa).
+ *
+ * Devuelve `null` cuando el proyecto todavía no tiene ningún render (404): "sin reporte"
+ * es un estado neutro de la UI, no un error. El resto de códigos se propaga como
+ * `ApiError`. Cuando hay render pero sin reporte fresco, el backend responde
+ * `{ status: "no_report", ... }` (que la UI muestra como aviso neutro).
+ */
+export async function fetchRenderQA(projectId: number): Promise<RenderQAResult | null> {
+  try {
+    return await request<RenderQAResult>(`/projects/${projectId}/render/qa`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+// --------------------------------------------------------------------------- //
 // Editor multipista (/projects/{id}/editor) — espejo de app/api/editor.py
 // --------------------------------------------------------------------------- //
 
